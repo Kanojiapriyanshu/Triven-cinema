@@ -4,11 +4,13 @@ import uuid
 from pathlib import Path
 
 import modal
+from dotenv import load_dotenv
 
 from inference.providers.base import VideoGenerationResult, VideoProvider
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(dotenv_path=PROJECT_ROOT / ".env", override=False)
 GENERATED_DIR = PROJECT_ROOT / "storage" / "generated"
 
 
@@ -68,9 +70,10 @@ class ModalLTXProvider(VideoProvider):
         destination = GENERATED_DIR / filename
         destination.write_bytes(video_bytes)
 
+        wall_elapsed = time.perf_counter() - started
         elapsed = float(result.get("render_seconds") or 0.0)
         if elapsed <= 0:
-            elapsed = time.perf_counter() - started
+            elapsed = wall_elapsed
 
         return VideoGenerationResult(
             filename=filename,
@@ -85,4 +88,6 @@ class ModalLTXProvider(VideoProvider):
             render_seconds=elapsed,
             prompt=str(result.get("prompt", prompt)),
             provider=self.name,
+            gpu=str(result.get("gpu") or "Modal GPU"),
+            wall_seconds=wall_elapsed,
         )

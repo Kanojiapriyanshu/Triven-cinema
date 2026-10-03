@@ -1,9 +1,12 @@
 import type {
+  AsyncVideoGenerationResponse,
   CombineScenesRequest,
   CombineScenesResponse,
   FullVideoGenerationRequest,
   FullVideoGenerationResponse,
   GenerationCapabilitiesResponse,
+  GenerationJobResponse,
+  MetricsSummaryResponse,
   ScenePlanRequest,
   ScenePlanResponse,
   VideoGenerationRequest,
@@ -38,16 +41,34 @@ export async function getGenerationCapabilities(): Promise<GenerationCapabilitie
 export async function generateScenePlan(
   payload: ScenePlanRequest
 ): Promise<ScenePlanResponse> {
-  const response = await fetch(`${API_URL}/api/v1/generations/plan`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timeoutMs = 25_000;
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    throw new Error(await readApiError(response, "Unable to generate scene plan."));
+  try {
+    const response = await fetch(`${API_URL}/api/v1/generations/plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "Unable to generate scene plan.")
+      );
+    }
+    return response.json();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "Storyboard planning exceeded 25 seconds. Triven should normally fall back automatically; retry once if the API was restarting."
+      );
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  return response.json();
 }
 
 export async function generateVideo(
@@ -63,6 +84,54 @@ export async function generateVideo(
     throw new Error(await readApiError(response, "Unable to generate video."));
   }
   return response.json();
+}
+
+export async function createVideoGenerationJob(
+  payload: VideoGenerationRequest
+): Promise<AsyncVideoGenerationResponse> {
+  const response = await fetch(`${API_URL}/api/v1/generations/jobs/video`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response, "Unable to start generation job."));
+  }
+  return response.json();
+}
+
+export async function getGenerationJob(
+  jobId: string
+): Promise<GenerationJobResponse> {
+  const response = await fetch(`${API_URL}/api/v1/generations/jobs/${jobId}`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response, "Unable to read generation job."));
+  }
+  return response.json();
+}
+
+export async function waitForVideoGenerationJob(
+  jobId: string,
+  onProgress?: (job: GenerationJobResponse) => void,
+  pollMs = 1000
+): Promise<VideoGenerationResponse> {
+  for (;;) {
+    const job = await getGenerationJob(jobId);
+    onProgress?.(job);
+
+    if (job.status === "completed" && job.result) {
+      return job.result;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "Generation job failed.");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 export async function combineSceneVideos(
@@ -91,6 +160,16 @@ export async function generateFullVideo(
 
   if (!response.ok) {
     throw new Error(await readApiError(response, "Unable to generate full video."));
+  }
+  return response.json();
+}
+
+export async function getMetricsSummary(): Promise<MetricsSummaryResponse> {
+  const response = await fetch(`${API_URL}/api/v1/generations/metrics/summary`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response, "Unable to load render metrics."));
   }
   return response.json();
 }

@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+.env.*
+__pycache__
+*.pyc
+apps/web/node_modules
+apps/web/.next
+storage/generated
+storage/temp
+storage/jobs
+storage/metrics
+storage/benchmarks
+.DS_Store

@@ -12,6 +12,8 @@ class VideoGenerationResult:
     prompt: str
     provider: str
     model: str = "ltx-2.5"
+    gpu: str | None = None
+    wall_seconds: float | None = None
 
 
 class VideoProvider(ABC):

@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
+    gemini_timeout_seconds: float = 15.0
+    gemini_thinking_level: str = "low"
 
     video_provider: str = "huggingface"
     hf_token: str = ""
@@ -17,6 +19,12 @@ class Settings(BaseSettings):
 
     modal_app_name: str = "triven-cinema-ltx"
     modal_function_name: str = "generate_video"
+
+    # Keep these at 0 until you copy the current hourly rates from Modal.
+    # They are used only for explicit cost estimates, never presented as billed cost.
+    modal_gpu_hourly_usd_b200: float = 0.0
+    modal_gpu_hourly_usd_h200: float = 0.0
+    modal_gpu_hourly_usd_h100: float = 0.0
 
     default_render_quality: str = "preview"
     default_decoder: str = "conv"

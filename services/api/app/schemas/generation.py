@@ -8,6 +8,24 @@ RenderQuality = Literal["preview", "1080p"]
 VideoProviderName = Literal["huggingface", "modal"]
 VideoModelName = Literal["ltx-2.5", "wan", "minimax"]
 DecoderName = Literal["conv", "diffusion"]
+PlannerSourceName = Literal["direct", "gemini", "fallback"]
+JobStatusName = Literal["queued", "running", "completed", "failed"]
+JobStageName = Literal[
+    "queued",
+    "initializing",
+    "rendering",
+    "delivery",
+    "probing",
+    "completed",
+    "failed",
+]
+
+
+class PlanQualityReport(BaseModel):
+    coverage_score: float
+    covered_terms: list[str]
+    missing_terms: list[str]
+    note: str
 
 
 class ScenePlanRequest(BaseModel):
@@ -27,17 +45,33 @@ class ScenePlanResponse(BaseModel):
     original_prompt: str
     aspect_ratio: AspectRatio
     scenes: list[Scene]
+    plan_quality: PlanQualityReport | None = None
+    planner_source: PlannerSourceName = "gemini"
+    planner_note: str | None = None
 
 
 class VideoGenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=10, max_length=5000)
     aspect_ratio: AspectRatio = "16:9"
     duration_seconds: float = Field(default=1.0, ge=1.0, le=5.0)
-    seed: int = 42
+    seed: int = Field(default=42, ge=0, le=2_147_483_647)
     decoder: DecoderName = "conv"
+    enhance_prompt: bool = False
     quality: RenderQuality = "preview"
     provider: VideoProviderName | None = None
     model: VideoModelName = "ltx-2.5"
+
+
+class MediaInfo(BaseModel):
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: float | None = None
+    video_codec: str | None = None
+    has_audio: bool = False
+    audio_codec: str | None = None
+    audio_channels: int | None = None
+    format_name: str | None = None
+    size_bytes: int = 0
 
 
 class VideoGenerationResponse(BaseModel):
@@ -47,10 +81,16 @@ class VideoGenerationResponse(BaseModel):
     seed: int
     render_details: str
     render_seconds: float
+    wall_seconds: float
     provider: str
     model: str
     quality: RenderQuality
     quality_note: str
+    gpu: str | None = None
+    media_info: MediaInfo
+    estimated_cost_usd: float | None = None
+    estimated_cost_per_output_minute_usd: float | None = None
+    cost_note: str
 
 
 class FullVideoScene(BaseModel):
@@ -62,8 +102,9 @@ class FullVideoGenerationRequest(BaseModel):
     scenes: list[FullVideoScene] = Field(..., min_length=1, max_length=20)
     aspect_ratio: AspectRatio = "16:9"
     duration_seconds: float = Field(default=1.0, ge=1.0, le=5.0)
-    seed: int = 42
+    seed: int = Field(default=42, ge=0, le=2_147_483_647)
     decoder: DecoderName = "conv"
+    enhance_prompt: bool = False
     quality: RenderQuality = "preview"
     provider: VideoProviderName | None = None
     model: VideoModelName = "ltx-2.5"
@@ -76,10 +117,16 @@ class FullVideoGenerationResponse(BaseModel):
     scene_video_urls: list[str]
     render_details: list[str]
     total_render_seconds: float
+    total_wall_seconds: float
     provider: str
     model: str
     quality: RenderQuality
     quality_note: str
+    gpu: str | None = None
+    media_info: MediaInfo
+    estimated_cost_usd: float | None = None
+    estimated_cost_per_output_minute_usd: float | None = None
+    cost_note: str
 
 
 class CombineScenesRequest(BaseModel):
@@ -95,6 +142,7 @@ class CombineScenesResponse(BaseModel):
     scene_count: int
     quality: RenderQuality
     quality_note: str
+    media_info: MediaInfo
 
 
 class GenerationCapabilitiesResponse(BaseModel):
@@ -102,4 +150,37 @@ class GenerationCapabilitiesResponse(BaseModel):
     models: list[dict]
     qualities: list[dict]
     aspect_ratios: list[AspectRatio]
+    decoders: list[DecoderName]
     max_scene_duration_seconds: float
+    async_jobs: bool
+    audio_probe: bool
+    cost_tracking_configured: bool
+
+
+class AsyncVideoGenerationResponse(BaseModel):
+    job_id: str
+    status: JobStatusName
+    status_url: str
+
+
+class GenerationJobResponse(BaseModel):
+    job_id: str
+    job_type: str
+    status: JobStatusName
+    stage: JobStageName
+    progress: int
+    message: str
+    payload: dict
+    result: VideoGenerationResponse | None = None
+    error: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class MetricsSummaryResponse(BaseModel):
+    total_events: int
+    total_render_seconds: float
+    total_estimated_cost_usd: float
+    average_render_seconds: float | None = None
+    average_estimated_cost_usd: float | None = None
+    by_gpu: dict[str, dict]

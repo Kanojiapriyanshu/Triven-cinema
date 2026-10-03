@@ -11,6 +11,7 @@ from models import MODEL_ROOT, REQUIRED_MODEL_FILES
 
 APP_NAME = "triven-cinema-ltx"
 GPU_TYPE = os.getenv("TRIVEN_MODAL_GPU", "B200")
+SCALEDOWN_WINDOW = int(os.getenv("TRIVEN_MODAL_SCALEDOWN_WINDOW", "15"))
 
 app = modal.App(APP_NAME)
 
@@ -79,7 +80,7 @@ def download_models() -> dict:
         "/outputs": outputs_volume,
     },
     timeout=60 * 60,
-    scaledown_window=60,
+    scaledown_window=SCALEDOWN_WINDOW,
 )
 def generate_video(
     prompt: str,
@@ -140,5 +141,6 @@ def generate_video(
 def main():
     print(f"Triven Cinema Modal app: {APP_NAME}")
     print(f"GPU: {GPU_TYPE}")
+    print(f"Scaledown window: {SCALEDOWN_WINDOW}s")
     print("Prepare models: modal run modal/app.py::download_models")
     print("Deploy: modal deploy modal/app.py")

@@ -2,6 +2,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from app.services.media_probe import probe_media
+
 
 class VideoCombineError(RuntimeError):
     pass
@@ -20,6 +22,45 @@ def _run_ffmpeg(command: list[str]) -> None:
         )
 
 
+def delivery_dimensions(aspect_ratio: str) -> tuple[int, int]:
+    if aspect_ratio == "9:16":
+        return 1080, 1920
+    if aspect_ratio == "1:1":
+        return 1080, 1080
+    return 1920, 1080
+
+
+def _add_silent_audio(input_path: Path, output_path: Path) -> Path:
+    info = probe_media(input_path)
+    duration = float(info.get("duration_seconds") or 1.0)
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-f",
+        "lavfi",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        str(output_path),
+    ]
+    _run_ffmpeg(command)
+    return output_path
+
+
 def combine_videos(
     video_paths: list[Path],
     output_path: Path,
@@ -34,9 +75,26 @@ def combine_videos(
             )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    concat_file = None
+    concat_file: Path | None = None
+    temporary_normalized: list[Path] = []
 
     try:
+        media = [probe_media(path) for path in video_paths]
+        any_audio = any(item.get("has_audio") for item in media)
+        all_audio = all(item.get("has_audio") for item in media)
+
+        normalized_paths = list(video_paths)
+        if any_audio and not all_audio:
+            normalized_paths = []
+            for index, (path, info) in enumerate(zip(video_paths, media, strict=True)):
+                if info.get("has_audio"):
+                    normalized_paths.append(path)
+                    continue
+                normalized = output_path.parent / f".normalized-{index}-{path.name}"
+                _add_silent_audio(path, normalized)
+                temporary_normalized.append(normalized)
+                normalized_paths.append(normalized)
+
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".txt",
@@ -46,7 +104,7 @@ def combine_videos(
         ) as handle:
             concat_file = Path(handle.name)
 
-            for video_path in video_paths:
+            for video_path in normalized_paths:
                 absolute_path = (
                     video_path.resolve().as_posix().replace("'", "'\\''")
                 )
@@ -69,14 +127,18 @@ def combine_videos(
             "18",
             "-pix_fmt",
             "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
+        ]
+
+        if any_audio:
+            command.extend(["-c:a", "aac", "-b:a", "192k"])
+        else:
+            command.append("-an")
+
+        command.extend([
             "-movflags",
             "+faststart",
             str(output_path),
-        ]
+        ])
 
         _run_ffmpeg(command)
 
@@ -90,6 +152,9 @@ def combine_videos(
     finally:
         if concat_file is not None and concat_file.exists():
             concat_file.unlink()
+        for path in temporary_normalized:
+            if path.exists():
+                path.unlink()
 
 
 def upscale_to_1080p(
@@ -98,22 +163,21 @@ def upscale_to_1080p(
     aspect_ratio: str,
 ) -> Path:
     """
-    Create a 1080-class delivery file.
+    Create a 1080-class delivery file exactly once.
 
-    This is delivery upscaling for the current MVP. It does not claim that the
-    source frames were natively generated at 1080p.
+    If the input already has the requested delivery dimensions, it is reused to
+    avoid an unnecessary second lossy encode. This still does not claim that
+    source detail was natively generated at 1080p.
     """
     if not input_path.exists():
         raise VideoCombineError(
             f"Input video does not exist: {input_path}"
         )
 
-    if aspect_ratio == "9:16":
-        width, height = 1080, 1920
-    elif aspect_ratio == "1:1":
-        width, height = 1080, 1080
-    else:
-        width, height = 1920, 1080
+    width, height = delivery_dimensions(aspect_ratio)
+    info = probe_media(input_path)
+    if info.get("width") == width and info.get("height") == height:
+        return input_path
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -133,14 +197,18 @@ def upscale_to_1080p(
         "18",
         "-pix_fmt",
         "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+    ]
+
+    if info.get("has_audio"):
+        command.extend(["-c:a", "aac", "-b:a", "192k"])
+    else:
+        command.append("-an")
+
+    command.extend([
         "-movflags",
         "+faststart",
         str(output_path),
-    ]
+    ])
 
     _run_ffmpeg(command)
 

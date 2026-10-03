@@ -5,11 +5,13 @@ import { FormEvent, useMemo, useState } from "react";
 import {
   absoluteApiUrl,
   combineSceneVideos,
+  createVideoGenerationJob,
   generateScenePlan,
-  generateVideo,
+  waitForVideoGenerationJob,
 } from "@/lib/api/cinema";
 import type {
   AspectRatio,
+  DecoderName,
   GenerationMode,
   RenderedSceneVideo,
   RenderQuality,
@@ -26,6 +28,11 @@ type FinalVideo = {
   downloadUrl: string;
   qualityNote: string;
   label: string;
+  hasAudio: boolean;
+  audioCodec: string | null;
+  dimensions: string;
+  estimatedCostUsd?: number | null;
+  gpu?: string | null;
 } | null;
 
 function Spinner() {
@@ -82,8 +89,11 @@ export default function Home() {
   const [sceneCount, setSceneCount] = useState(2);
   const [durationSeconds, setDurationSeconds] = useState(1);
   const [quality, setQuality] = useState<RenderQuality>("preview");
-  const [provider, setProvider] = useState<VideoProviderName>("huggingface");
+  const [provider, setProvider] = useState<VideoProviderName>("modal");
   const [model, setModel] = useState<VideoModelName>("ltx-2.5");
+  const [decoder, setDecoder] = useState<DecoderName>("conv");
+  const [seed, setSeed] = useState(42);
+  const [enhancePrompt, setEnhancePrompt] = useState(false);
 
   const [result, setResult] = useState<ScenePlanResponse | null>(null);
   const [scenePrompts, setScenePrompts] = useState<ScenePromptMap>({});
@@ -122,6 +132,20 @@ export default function Home() {
     setProgressMessage("");
   }
 
+  function invalidateRenderedMedia() {
+    setRenderedVideos({});
+    setFinalVideo(null);
+  }
+
+  async function generateThroughJob(
+    payload: Parameters<typeof createVideoGenerationJob>[0]
+  ) {
+    const started = await createVideoGenerationJob(payload);
+    return waitForVideoGenerationJob(started.job_id, (job) => {
+      setProgressMessage(`${job.message} ${job.progress}%`);
+    });
+  }
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const cleanPrompt = prompt.trim();
@@ -139,12 +163,13 @@ export default function Home() {
         setDirectGenerating(true);
         setProgressMessage("Sending your prompt directly to LTX 2.5...");
 
-        const response = await generateVideo({
+        const response = await generateThroughJob({
           prompt: cleanPrompt,
           aspect_ratio: aspectRatio,
           duration_seconds: durationSeconds,
-          seed: 42,
-          decoder: "conv",
+          seed,
+          decoder,
+          enhance_prompt: enhancePrompt,
           quality,
           provider,
           model,
@@ -154,7 +179,12 @@ export default function Home() {
           url: absoluteApiUrl(response.video_url),
           downloadUrl: absoluteApiUrl(response.download_url),
           qualityNote: response.quality_note,
-          label: `${response.provider} · ${response.render_seconds.toFixed(1)}s render`,
+          label: `${response.provider} · ${response.render_seconds.toFixed(1)}s render · ${response.wall_seconds.toFixed(1)}s wall`,
+          hasAudio: response.media_info.has_audio,
+          audioCodec: response.media_info.audio_codec,
+          dimensions: `${response.media_info.width ?? "?"}×${response.media_info.height ?? "?"}`,
+          estimatedCostUsd: response.estimated_cost_usd,
+          gpu: response.gpu,
         });
       } catch (err) {
         setError(errorMessage(err, "Direct generation failed."));
@@ -197,13 +227,16 @@ export default function Home() {
     if (!scenePrompt) throw new Error("This scene needs a prompt before rendering.");
 
     const sceneIndex = result.scenes.findIndex((scene) => scene.id === sceneId);
-    const response = await generateVideo({
+    const response = await generateThroughJob({
       prompt: scenePrompt,
       aspect_ratio: result.aspect_ratio,
       duration_seconds: durationSeconds,
-      seed: 42 + Math.max(sceneIndex, 0),
-      decoder: "conv",
-      quality,
+      seed: seed + Math.max(sceneIndex, 0),
+      decoder,
+      enhance_prompt: false,
+      // Storyboard prompts are already Gemini-generated; avoid enhancing them twice.
+      // Storyboard clips stay at source quality; 1080p is applied once to the final combine.
+      quality: "preview",
       provider,
       model,
     });
@@ -214,7 +247,11 @@ export default function Home() {
       filename: response.filename,
       details: response.render_details,
       renderSeconds: response.render_seconds,
+      wallSeconds: response.wall_seconds,
       provider: response.provider,
+      gpu: response.gpu,
+      mediaInfo: response.media_info,
+      estimatedCostUsd: response.estimated_cost_usd,
       qualityNote: response.quality_note,
     };
   }
@@ -273,11 +310,30 @@ export default function Home() {
         quality,
       });
 
+      const sceneCosts = Object.values(available)
+        .map((item) => item.estimatedCostUsd)
+        .filter((value): value is number => value != null);
+      const totalEstimatedCost = sceneCosts.length
+        ? sceneCosts.reduce((total, value) => total + value, 0)
+        : null;
+      const gpuNames = Array.from(
+        new Set(
+          Object.values(available)
+            .map((item) => item.gpu)
+            .filter((value): value is string => Boolean(value))
+        )
+      );
+
       setFinalVideo({
         url: absoluteApiUrl(combined.final_video_url),
         downloadUrl: absoluteApiUrl(combined.final_download_url),
         qualityNote: combined.quality_note,
         label: `${combined.scene_count} scenes · FFmpeg final`,
+        hasAudio: combined.media_info.has_audio,
+        audioCodec: combined.media_info.audio_codec,
+        dimensions: `${combined.media_info.width ?? "?"}×${combined.media_info.height ?? "?"}`,
+        estimatedCostUsd: totalEstimatedCost,
+        gpu: gpuNames.length === 1 ? gpuNames[0] : gpuNames.join(" + ") || null,
       });
     } catch (err) {
       setError(errorMessage(err, "Unable to create the final video."));
@@ -390,7 +446,10 @@ export default function Home() {
                   <select
                     value={model}
                     disabled={isBusy}
-                    onChange={(event) => setModel(event.target.value as VideoModelName)}
+                    onChange={(event) => {
+                      setModel(event.target.value as VideoModelName);
+                      invalidateRenderedMedia();
+                    }}
                     className="control"
                   >
                     <option value="ltx-2.5">LTX 2.5</option>
@@ -401,7 +460,10 @@ export default function Home() {
                   <select
                     value={provider}
                     disabled={isBusy}
-                    onChange={(event) => setProvider(event.target.value as VideoProviderName)}
+                    onChange={(event) => {
+                      setProvider(event.target.value as VideoProviderName);
+                      invalidateRenderedMedia();
+                    }}
                     className="control"
                   >
                     <option value="huggingface">ZeroGPU · dev</option>
@@ -411,7 +473,10 @@ export default function Home() {
                   <select
                     value={aspectRatio}
                     disabled={isBusy}
-                    onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}
+                    onChange={(event) => {
+                      setAspectRatio(event.target.value as AspectRatio);
+                      resetOutput();
+                    }}
                     className="control"
                   >
                     <option value="16:9">16:9 Landscape</option>
@@ -435,7 +500,10 @@ export default function Home() {
                   <select
                     value={durationSeconds}
                     disabled={isBusy}
-                    onChange={(event) => setDurationSeconds(Number(event.target.value))}
+                    onChange={(event) => {
+                      setDurationSeconds(Number(event.target.value));
+                      invalidateRenderedMedia();
+                    }}
                     className="control"
                   >
                     {[1, 2, 3, 5].map((seconds) => (
@@ -446,12 +514,57 @@ export default function Home() {
                   <select
                     value={quality}
                     disabled={isBusy}
-                    onChange={(event) => setQuality(event.target.value as RenderQuality)}
+                    onChange={(event) => {
+                      setQuality(event.target.value as RenderQuality);
+                      setFinalVideo(null);
+                    }}
                     className="control"
                   >
                     <option value="preview">Source preview</option>
                     <option value="1080p">1080p delivery</option>
                   </select>
+
+                  <select
+                    value={decoder}
+                    disabled={isBusy}
+                    onChange={(event) => {
+                      setDecoder(event.target.value as DecoderName);
+                      invalidateRenderedMedia();
+                    }}
+                    className="control"
+                  >
+                    <option value="conv">Conv decoder</option>
+                    <option value="diffusion">Diffusion decoder</option>
+                  </select>
+
+                  <label className="control flex items-center gap-2">
+                    <span className="text-zinc-600">Seed</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={2147483647}
+                      value={seed}
+                      disabled={isBusy}
+                      onChange={(event) => {
+                        setSeed(Math.max(0, Number(event.target.value) || 0));
+                        invalidateRenderedMedia();
+                      }}
+                      className="w-20 bg-transparent text-zinc-300 outline-none"
+                    />
+                  </label>
+
+                  <label className="control flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={enhancePrompt}
+                      disabled={isBusy || mode === "storyboard"}
+                      onChange={(event) => {
+                        setEnhancePrompt(event.target.checked);
+                        invalidateRenderedMedia();
+                      }}
+                    />
+                    Enhance direct prompt
+                  </label>
                 </div>
 
                 <button
@@ -468,7 +581,7 @@ export default function Home() {
 
               <div className="mt-3 text-[11px] text-zinc-600">
                 {quality === "1080p"
-                  ? "1080p is currently a delivery upscale from the source LTX render; native-resolution benchmarking remains a production task."
+                  ? "Storyboard scenes stay at source quality and the final sequence is upscaled once to 1080-class delivery dimensions."
                   : "Source preview avoids unnecessary upscaling while you test prompts and scene composition."}
               </div>
             </div>
@@ -503,6 +616,21 @@ export default function Home() {
                 <p className="mt-2 text-sm text-zinc-600">
                   {result.scenes.length} scenes · {result.aspect_ratio} · {plannedDuration}s AI plan · {durationSeconds}s render per scene
                 </p>
+                {result.planner_note && (
+                  <p
+                    className={`mt-2 text-[11px] ${result.planner_source === "fallback" ? "text-amber-500/80" : "text-zinc-600"}`}
+                  >
+                    {result.planner_note}
+                  </p>
+                )}
+                {result.plan_quality && (
+                  <p className="mt-2 text-[11px] text-zinc-700" title={result.plan_quality.note}>
+                    Storyboard prompt coverage: {Math.round(result.plan_quality.coverage_score * 100)}%
+                    {result.plan_quality.missing_terms.length > 0
+                      ? ` · review: ${result.plan_quality.missing_terms.slice(0, 5).join(", ")}`
+                      : " · key prompt terms preserved"}
+                  </p>
+                )}
               </div>
 
               <button
@@ -568,7 +696,10 @@ export default function Home() {
 
                       {video && (
                         <div className="mt-4 rounded-xl bg-white/[0.025] px-3 py-2 text-[11px] leading-5 text-zinc-600">
-                          {video.details} · {video.renderSeconds.toFixed(1)}s render · {video.provider}
+                          {video.details} · {video.renderSeconds.toFixed(1)}s render · {video.wallSeconds.toFixed(1)}s wall · {video.provider}
+                          {video.gpu ? ` · ${video.gpu}` : ""}
+                          {video.mediaInfo.has_audio ? ` · audio ${video.mediaInfo.audio_codec || "present"}` : " · no audio stream"}
+                          {video.estimatedCostUsd != null ? ` · est. $${video.estimatedCostUsd.toFixed(4)}` : ""}
                         </div>
                       )}
 
@@ -635,6 +766,11 @@ function FinalVideoCard({
             <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-medium text-emerald-400">Ready</span>
           </div>
           <div className="mt-1 text-xs text-zinc-600">{video.label}</div>
+          <div className="mt-1 text-[11px] text-zinc-700">
+            {video.dimensions} · {video.hasAudio ? `audio ${video.audioCodec || "present"}` : "no audio stream"}
+            {video.gpu ? ` · ${video.gpu}` : ""}
+            {video.estimatedCostUsd != null ? ` · est. $${video.estimatedCostUsd.toFixed(4)}` : ""}
+          </div>
         </div>
         <a
           href={video.downloadUrl}

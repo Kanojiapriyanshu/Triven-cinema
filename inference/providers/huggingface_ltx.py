@@ -87,4 +87,6 @@ class HuggingFaceLTXProvider(VideoProvider):
             render_seconds=elapsed,
             prompt=str(prepared_prompt),
             provider=self.name,
+            gpu="ZeroGPU",
+            wall_seconds=elapsed,
         )
