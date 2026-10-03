@@ -14,6 +14,7 @@ class VideoGenerationResult:
     model: str = "ltx-2.5"
     gpu: str | None = None
     wall_seconds: float | None = None
+    reference_conditioned: bool = False
 
 
 class VideoProvider(ABC):
@@ -29,5 +30,7 @@ class VideoProvider(ABC):
         seed: int,
         decoder: str,
         enhance_prompt: bool = False,
+        reference_image_path: str | None = None,
+        reference_strength: float = 0.95,
     ) -> VideoGenerationResult:
         raise NotImplementedError

@@ -27,3 +27,21 @@ def ensure_minimum_free_disk() -> float:
             "Run storage cleanup before starting another paid render."
         )
     return free_gb
+
+
+def resolve_generated_asset(filename: str, *, extensions: set[str]) -> Path:
+    """Resolve one generated asset by basename without allowing path traversal."""
+    name = Path(filename).name
+    if name != filename or not name:
+        raise ValueError("Invalid generated asset filename.")
+    suffix = Path(name).suffix.lower()
+    if suffix not in extensions:
+        raise ValueError(f"Unsupported generated asset type: {suffix or 'none'}")
+
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    path = (GENERATED_DIR / name).resolve()
+    if path.parent != GENERATED_DIR.resolve():
+        raise ValueError("Invalid generated asset path.")
+    if not path.exists():
+        raise FileNotFoundError(f"Generated asset not found: {name}")
+    return path

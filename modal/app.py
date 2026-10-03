@@ -89,6 +89,9 @@ def generate_video(
     seed: int = 42,
     decoder: str = "conv",
     enhance_prompt: bool = False,
+    reference_image_bytes: bytes | None = None,
+    reference_image_suffix: str = ".png",
+    reference_strength: float = 0.95,
 ) -> dict:
     del enhance_prompt  # Prompt enhancement currently happens in Triven/Gemini.
 
@@ -109,16 +112,30 @@ def generate_video(
     # grow indefinitely. Model weights remain persistent in triven-cinema-models.
     output_path = Path("/tmp") / f"ltx-{uuid.uuid4().hex}.mp4"
 
-    command = build_command(
-        prompt=prompt,
-        output_path=output_path,
-        width=width,
-        height=height,
-        duration_seconds=duration_seconds,
-        seed=seed,
-        decoder=decoder,
-    )
-    run_ltx_command(command)
+    reference_path: Path | None = None
+    if reference_image_bytes:
+        suffix = reference_image_suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+            suffix = ".png"
+        reference_path = Path("/tmp") / f"continuity-{uuid.uuid4().hex}{suffix}"
+        reference_path.write_bytes(reference_image_bytes)
+
+    try:
+        command = build_command(
+            prompt=prompt,
+            output_path=output_path,
+            width=width,
+            height=height,
+            duration_seconds=duration_seconds,
+            seed=seed,
+            decoder=decoder,
+            reference_image_path=reference_path,
+            reference_strength=reference_strength,
+        )
+        run_ltx_command(command)
+    finally:
+        if reference_path is not None:
+            reference_path.unlink(missing_ok=True)
 
     if not output_path.exists():
         raise RuntimeError("LTX finished without producing an MP4 file.")
@@ -134,9 +151,11 @@ def generate_video(
         "render_details": (
             f"{width}x{height} · {duration_seconds:.2f}s · "
             f"{decoder} decoder · {GPU_TYPE}"
+            + (" · first-frame continuity" if reference_image_bytes else "")
         ),
         "render_seconds": elapsed,
         "gpu": GPU_TYPE,
+        "reference_conditioned": bool(reference_image_bytes),
     }
 
 

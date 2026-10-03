@@ -30,6 +30,8 @@ def build_command(
     duration_seconds: float,
     seed: int,
     decoder: str,
+    reference_image_path: Path | None = None,
+    reference_strength: float = 0.95,
 ) -> list[str]:
     video_vae = (
         VIDEO_VAE_DIFFUSION
@@ -37,7 +39,7 @@ def build_command(
         else VIDEO_VAE_CONV
     )
 
-    return [
+    command = [
         "uv",
         "run",
         "python",
@@ -68,6 +70,21 @@ def build_command(
         "--prompt",
         prompt,
     ]
+
+    # LTX-2 image conditioning syntax is:
+    #   --image PATH FRAME_IDX STRENGTH [CRF]
+    # Frame 0 is a first-frame latent replacement/conditioning anchor, giving
+    # the next clip a real visual continuation instead of another independent T2V sample.
+    if reference_image_path is not None:
+        strength = max(0.0, min(1.0, float(reference_strength)))
+        command.extend([
+            "--image",
+            str(reference_image_path),
+            "0",
+            f"{strength:.3f}",
+        ])
+
+    return command
 
 
 def run_ltx_command(command: list[str]) -> None:

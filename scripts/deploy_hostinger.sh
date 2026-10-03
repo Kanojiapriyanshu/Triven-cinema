@@ -30,15 +30,7 @@ for _ in $(seq 1 60); do
     echo "API is ready."
     "${COMPOSE[@]}" ps
 
-    domain="$(python3 - <<'PY'
-from pathlib import Path
-for raw in Path('.env').read_text(encoding='utf-8').splitlines():
-    line = raw.strip()
-    if line.startswith('TRIVEN_DOMAIN='):
-        print(line.split('=', 1)[1].strip().strip('"').strip("'"))
-        break
-PY
-)"
+    domain="devansh.info"
     if [ -n "$domain" ]; then
       echo "Checking public HTTPS endpoint: https://$domain/api/v1/health/ready"
       if curl -fsS --connect-timeout 8 --max-time 15 \

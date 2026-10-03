@@ -1,4 +1,4 @@
-{$TRIVEN_DOMAIN} {
+devansh.info {
     encode zstd gzip
 
     handle /api/* {

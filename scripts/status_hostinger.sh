@@ -10,15 +10,7 @@ printf '\nAPI health (inside Docker network):\n'
   curl -fsS http://127.0.0.1:8000/api/v1/health/ready || true
 
 if [ -f .env ]; then
-  domain="$(python3 - <<'PY'
-from pathlib import Path
-for raw in Path('.env').read_text(encoding='utf-8').splitlines():
-    line = raw.strip()
-    if line.startswith('TRIVEN_DOMAIN='):
-        print(line.split('=', 1)[1].strip().strip('"').strip("'"))
-        break
-PY
-)"
+  domain="devansh.info"
   if [ -n "$domain" ]; then
     printf '\n\nPublic HTTPS health:\n'
     curl -fsS --connect-timeout 5 --max-time 10 \

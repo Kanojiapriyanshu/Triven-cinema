@@ -29,6 +29,7 @@ from app.services.job_service import (
     submit_job,
     update_job,
 )
+from app.services.continuity_service import compose_continuity_prompt, safe_continuity_id
 from app.services.media_probe import probe_media
 from app.services.metrics_service import (
     estimate_gpu_cost,
@@ -37,8 +38,8 @@ from app.services.metrics_service import (
 )
 from app.services.prompt_quality import evaluate_plan_prompt_coverage
 from app.services.scene_planner import create_scene_plan
-from app.services.storage_service import ensure_minimum_free_disk
-from app.services.video_combiner import combine_videos, upscale_to_1080p
+from app.services.storage_service import ensure_minimum_free_disk, resolve_generated_asset
+from app.services.video_combiner import combine_videos, extract_last_frame, upscale_to_1080p
 from app.services.video_profiles import source_render_dimensions
 from inference.providers.router import get_video_provider
 
@@ -122,34 +123,48 @@ def _generate_video_impl(
     progress: ProgressCallback | None = None,
 ) -> VideoGenerationResponse:
     if progress:
-        progress("initializing", 8, "Checking local storage and selecting the render provider...")
+        progress("initializing", 8, "Checking storage, continuity state and render provider...")
 
     ensure_minimum_free_disk()
     provider_key = request.provider or settings.video_provider
-    provider = get_video_provider(
-        provider_key,
-        model=request.model,
-    )
+    provider = get_video_provider(provider_key, model=request.model)
     width, height = source_render_dimensions(request.aspect_ratio)
 
     prompt_to_render = request.prompt
     provider_enhance_prompt = request.enhance_prompt
     if request.enhance_prompt and provider_key == "modal":
-        # The self-hosted Modal CLI does not expose the public Space prompt enhancer.
-        # Reuse Triven's Gemini planner to create one generation-ready direct shot.
-        prompt_to_render = create_scene_plan(
+        enhanced = create_scene_plan(
             prompt=request.prompt,
             scene_count=1,
             aspect_ratio=request.aspect_ratio,
             force_ai=True,
-        ).scenes[0].prompt
+        )
+        prompt_to_render = enhanced.scenes[0].prompt
         provider_enhance_prompt = False
+
+    if request.continuity_mode != "off":
+        prompt_to_render = compose_continuity_prompt(
+            scene_prompt=prompt_to_render,
+            character_bible=request.character_bible,
+            style_bible=request.style_bible,
+            scene_index=request.scene_index,
+            scene_count=request.scene_count,
+        )
+
+    reference_path: Path | None = None
+    if request.continuity_mode == "strict" and request.reference_frame_filename:
+        if provider_key != "modal":
+            raise ValueError("Strict first-frame continuity currently requires the Modal LTX-2.5 provider.")
+        reference_path = resolve_generated_asset(
+            request.reference_frame_filename,
+            extensions={".png", ".jpg", ".jpeg", ".webp"},
+        )
 
     if progress:
         progress(
             "rendering",
             20,
-            "Allocating GPU, loading LTX-2.5 and rendering the clip...",
+            "Rendering with LTX-2.5" + (" using the previous scene frame..." if reference_path else "..."),
         )
 
     result = provider.generate(
@@ -160,9 +175,19 @@ def _generate_video_impl(
         seed=request.seed,
         decoder=request.decoder,
         enhance_prompt=provider_enhance_prompt,
+        reference_image_path=str(reference_path) if reference_path else None,
+        reference_strength=request.continuity_strength,
     )
 
     source_path = Path(result.path)
+    continuity_frame_path: Path | None = None
+    if request.continuity_mode != "off":
+        continuity_tag = safe_continuity_id(request.continuity_id or uuid.uuid4().hex[:12])
+        continuity_frame_path = GENERATED_DIR / (
+            f"continuity-{continuity_tag}-scene-{(request.scene_index or 0) + 1}-{uuid.uuid4().hex[:8]}.png"
+        )
+        extract_last_frame(source_path, continuity_frame_path)
+
     if progress:
         progress("delivery", 82, "Preparing the requested delivery file...")
 
@@ -174,7 +199,7 @@ def _generate_video_impl(
     )
 
     if progress:
-        progress("probing", 92, "Validating video dimensions and native audio stream...")
+        progress("probing", 92, "Validating video dimensions, audio and continuity frame...")
 
     media_info = _media_info(delivery_path)
     wall_seconds = float(result.wall_seconds or result.render_seconds)
@@ -204,6 +229,11 @@ def _generate_video_impl(
             "seed": request.seed,
             "has_audio": media_info.has_audio,
             "audio_codec": media_info.audio_codec,
+            "continuity_mode": request.continuity_mode,
+            "continuity_id": request.continuity_id,
+            "continuity_applied": result.reference_conditioned,
+            "reference_frame_filename": request.reference_frame_filename,
+            "continuity_frame_filename": continuity_frame_path.name if continuity_frame_path else None,
             "estimated_cost_usd": estimated_cost,
             "estimated_cost_per_output_minute_usd": estimated_cost_per_minute,
             "filename": filename,
@@ -227,6 +257,11 @@ def _generate_video_impl(
         estimated_cost_usd=estimated_cost,
         estimated_cost_per_output_minute_usd=estimated_cost_per_minute,
         cost_note=cost_note,
+        continuity_mode=request.continuity_mode,
+        continuity_applied=result.reference_conditioned,
+        reference_frame_filename=request.reference_frame_filename,
+        continuity_frame_url=media_url(continuity_frame_path.name) if continuity_frame_path else None,
+        continuity_frame_filename=continuity_frame_path.name if continuity_frame_path else None,
     )
 
 
@@ -277,6 +312,8 @@ async def generation_capabilities():
         ],
         aspect_ratios=["16:9", "9:16", "1:1"],
         decoders=["conv", "diffusion"],
+        continuity_modes=["off", "balanced", "strict"],
+        image_conditioning=True,
         max_scene_duration_seconds=5.0,
         async_jobs=True,
         audio_probe=True,
@@ -306,6 +343,9 @@ def plan_generation(request: ScenePlanRequest):
             plan_quality=plan_quality,
             planner_source=plan.source,
             planner_note=plan.note,
+            continuity_id=f"story-{uuid.uuid4().hex[:16]}",
+            character_bible=plan.character_bible,
+            style_bible=plan.style_bible,
         )
     except Exception as exc:
         LOGGER.exception("Scene planning failed")
@@ -436,15 +476,25 @@ def generate_full_video(request: FullVideoGenerationRequest):
         total_wall_seconds = 0.0
         gpu: str | None = None
 
+        previous_frame: Path | None = None
         for index, scene in enumerate(request.scenes):
+            locked_prompt = compose_continuity_prompt(
+                scene_prompt=scene.prompt,
+                character_bible=request.character_bible,
+                style_bible=request.style_bible,
+                scene_index=index,
+                scene_count=len(request.scenes),
+            ) if request.continuity_mode != "off" else scene.prompt
             result = provider.generate(
-                prompt=scene.prompt,
+                prompt=locked_prompt,
                 width=width,
                 height=height,
                 duration_seconds=request.duration_seconds,
-                seed=request.seed + index,
+                seed=request.seed,
                 decoder=request.decoder,
                 enhance_prompt=request.enhance_prompt,
+                reference_image_path=str(previous_frame) if request.continuity_mode == "strict" and previous_frame else None,
+                reference_strength=request.continuity_strength,
             )
             clip_path = Path(result.path)
             generated_paths.append(clip_path)
@@ -453,6 +503,9 @@ def generate_full_video(request: FullVideoGenerationRequest):
             total_render_seconds += result.render_seconds
             total_wall_seconds += float(result.wall_seconds or result.render_seconds)
             gpu = result.gpu or gpu
+            if request.continuity_mode != "off":
+                previous_frame = GENERATED_DIR / f"continuity-full-{uuid.uuid4().hex}.png"
+                extract_last_frame(clip_path, previous_frame)
 
         combined_path = GENERATED_DIR / f"final-{uuid.uuid4().hex}.mp4"
         combine_videos(generated_paths, combined_path)

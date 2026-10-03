@@ -3,6 +3,7 @@ export type RenderQuality = "preview" | "1080p";
 export type VideoProviderName = "huggingface" | "modal";
 export type VideoModelName = "ltx-2.5" | "wan" | "minimax";
 export type DecoderName = "conv" | "diffusion";
+export type ContinuityMode = "off" | "balanced" | "strict";
 export type GenerationMode = "storyboard" | "direct";
 export type JobStatusName = "queued" | "running" | "completed" | "failed";
 export type JobStageName =
@@ -41,6 +42,9 @@ export interface ScenePlanResponse {
   plan_quality?: PlanQualityReport | null;
   planner_source: "gemini" | "direct" | "fallback";
   planner_note?: string | null;
+  continuity_id: string;
+  character_bible: string;
+  style_bible: string;
 }
 
 export interface VideoGenerationRequest {
@@ -53,6 +57,14 @@ export interface VideoGenerationRequest {
   quality: RenderQuality;
   provider: VideoProviderName;
   model: VideoModelName;
+  continuity_mode?: ContinuityMode;
+  continuity_id?: string | null;
+  scene_index?: number | null;
+  scene_count?: number | null;
+  character_bible?: string | null;
+  style_bible?: string | null;
+  reference_frame_filename?: string | null;
+  continuity_strength?: number;
 }
 
 export interface MediaInfo {
@@ -84,6 +96,11 @@ export interface VideoGenerationResponse {
   estimated_cost_usd: number | null;
   estimated_cost_per_output_minute_usd: number | null;
   cost_note: string;
+  continuity_mode: ContinuityMode;
+  continuity_applied: boolean;
+  reference_frame_filename: string | null;
+  continuity_frame_url: string | null;
+  continuity_frame_filename: string | null;
 }
 
 export interface FullVideoScene {
@@ -101,6 +118,11 @@ export interface FullVideoGenerationRequest {
   quality: RenderQuality;
   provider: VideoProviderName;
   model: VideoModelName;
+  continuity_mode?: ContinuityMode;
+  continuity_id?: string | null;
+  character_bible?: string | null;
+  style_bible?: string | null;
+  continuity_strength?: number;
 }
 
 export interface FullVideoGenerationResponse {
@@ -157,6 +179,8 @@ export interface GenerationCapabilitiesResponse {
   }>;
   aspect_ratios: AspectRatio[];
   decoders: DecoderName[];
+  continuity_modes: ContinuityMode[];
+  image_conditioning: boolean;
   max_scene_duration_seconds: number;
   async_jobs: boolean;
   audio_probe: boolean;
@@ -210,4 +234,9 @@ export interface RenderedSceneVideo {
   mediaInfo: MediaInfo;
   estimatedCostUsd: number | null;
   qualityNote: string;
+  continuityMode: ContinuityMode;
+  continuityApplied: boolean;
+  referenceFrameFilename: string | null;
+  continuityFrameUrl: string | null;
+  continuityFrameFilename: string | null;
 }

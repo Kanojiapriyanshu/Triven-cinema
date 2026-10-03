@@ -54,10 +54,10 @@ If Hostinger's control panel firewall is enabled, allow the same public ports th
 
 ## 3. DNS
 
-Create an A record for the hostname you want to use:
+For the current demo, deployment is pinned to `devansh.info`. Create this A record:
 
 ```text
-cinema.example.com -> YOUR_VPS_PUBLIC_IPV4
+devansh.info -> YOUR_VPS_PUBLIC_IPV4
 ```
 
 If you publish an AAAA record, it must point to the same VPS over working IPv6. Remove stale AAAA records instead of leaving them pointed elsewhere.
@@ -87,8 +87,8 @@ nano .env
 Set at minimum:
 
 ```text
-TRIVEN_DOMAIN
-FRONTEND_URL
+TRIVEN_DOMAIN=devansh.info
+FRONTEND_URL=https://devansh.info
 GEMINI_API_KEY
 MODAL_TOKEN_ID
 MODAL_TOKEN_SECRET
@@ -96,7 +96,7 @@ MODAL_APP_NAME
 MODAL_FUNCTION_NAME
 ```
 
-`TRIVEN_DOMAIN` must be the hostname only, for example `cinema.example.com`, without `https://`.
+`TRIVEN_DOMAIN` is intentionally pinned to `devansh.info` for this demo. The production preflight rejects another hostname until the demo deployment is intentionally changed.
 
 Use a dedicated Modal production token. The Modal Python client reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, so the VPS does not need your personal `~/.modal.toml`.
 
@@ -212,7 +212,7 @@ From the VPS:
 From another machine/network:
 
 ```bash
-curl -fsS https://cinema.example.com/api/v1/health/ready
+curl -fsS https://devansh.info/api/v1/health/ready
 ```
 
 Then test the actual product flow with one short preview render before submitting longer paid generations.

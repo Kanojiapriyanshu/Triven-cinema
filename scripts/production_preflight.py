@@ -105,10 +105,12 @@ def main() -> int:
             fail(f"{key} is missing")
 
     domain = env.get("TRIVEN_DOMAIN", "").strip()
+    if domain and domain != "devansh.info":
+        fail("This demo deployment is pinned to TRIVEN_DOMAIN=devansh.info")
     if domain:
         parsed = urlparse(domain if "://" in domain else f"https://{domain}")
         if "://" in domain:
-            fail("TRIVEN_DOMAIN must be a hostname only, for example cinema.example.com (no https://)")
+            fail("TRIVEN_DOMAIN must be a hostname only, for example devansh.info (no https://)")
         elif not parsed.hostname or parsed.hostname != domain:
             fail("TRIVEN_DOMAIN is not a valid hostname")
         elif hostname_resolves(domain):

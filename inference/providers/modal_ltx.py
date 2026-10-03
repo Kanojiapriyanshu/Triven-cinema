@@ -39,8 +39,19 @@ class ModalLTXProvider(VideoProvider):
         seed: int,
         decoder: str,
         enhance_prompt: bool = False,
+        reference_image_path: str | None = None,
+        reference_strength: float = 0.95,
     ) -> VideoGenerationResult:
         started = time.perf_counter()
+
+        reference_bytes: bytes | None = None
+        reference_suffix = ".png"
+        if reference_image_path:
+            path = Path(reference_image_path)
+            if not path.exists():
+                raise FileNotFoundError(f"Continuity reference frame not found: {path.name}")
+            reference_bytes = path.read_bytes()
+            reference_suffix = path.suffix.lower() or ".png"
 
         try:
             remote_function = modal.Function.from_name(
@@ -55,6 +66,9 @@ class ModalLTXProvider(VideoProvider):
                 seed=seed,
                 decoder=decoder,
                 enhance_prompt=enhance_prompt,
+                reference_image_bytes=reference_bytes,
+                reference_image_suffix=reference_suffix,
+                reference_strength=float(reference_strength),
             )
         except Exception as exc:
             raise RuntimeError(
@@ -92,4 +106,5 @@ class ModalLTXProvider(VideoProvider):
             provider=self.name,
             gpu=str(result.get("gpu") or "Modal GPU"),
             wall_seconds=wall_elapsed,
+            reference_conditioned=bool(result.get("reference_conditioned", False)),
         )

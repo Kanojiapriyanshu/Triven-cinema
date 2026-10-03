@@ -262,3 +262,17 @@ deploy/hostinger/README.md
 ```
 
 **Do not publish ports 3000 or 8000 on the VPS firewall.** Only SSH, HTTP and HTTPS should be publicly reachable.
+
+## Character continuity for multi-scene stories
+
+Storyboard mode now defaults to **Strict continuity**. Triven creates one shared character bible and one shared visual-style bible, injects the same immutable identity locks into every scene prompt, and keeps the same seed across the whole story. After each rendered scene, FastAPI extracts the final video frame. The next Modal/LTX-2.5 render receives that PNG as frame-0 image conditioning, so the next clip starts from the actual visual identity produced by the previous clip instead of reinterpreting the character from text alone.
+
+Continuity modes:
+
+- `strict`: shared identity/style locks + same seed + previous-scene first-frame conditioning on Modal.
+- `balanced`: shared identity/style locks + same seed, without image conditioning.
+- `off`: independent scene generation.
+
+For a 45-second demo, use **9 scenes x 5 seconds**. The UI supports up to 10 storyboard scenes.
+
+The demo production domain is currently pinned to **https://devansh.info**. Caddy, production environment examples, preflight checks, and Hostinger health checks all target that hostname.

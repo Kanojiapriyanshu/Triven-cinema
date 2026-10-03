@@ -32,6 +32,14 @@ class HostingerDeploymentTests(unittest.TestCase):
         self.assertIn("JOB_WORKERS=1", text)
         self.assertIn("JOB_MAX_PENDING=3", text)
 
+    def test_demo_domain_is_pinned_to_devansh_info(self):
+        env_text = (ROOT / ".env.production.example").read_text()
+        caddy_text = (ROOT / "deploy/hostinger/Caddyfile").read_text()
+        self.assertIn('TRIVEN_DOMAIN="devansh.info"', env_text)
+        self.assertIn('FRONTEND_URL="https://devansh.info"', env_text)
+        self.assertTrue(caddy_text.lstrip().startswith("devansh.info {"))
+        self.assertNotIn("cinema.example.com", caddy_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ import {
 } from "@/lib/api/cinema";
 import type {
   AspectRatio,
+  ContinuityMode,
   DecoderName,
   GenerationMode,
   RenderedSceneVideo,
@@ -94,6 +95,7 @@ export default function Home() {
   const [decoder, setDecoder] = useState<DecoderName>("conv");
   const [seed, setSeed] = useState(42);
   const [enhancePrompt, setEnhancePrompt] = useState(false);
+  const [continuityMode, setContinuityMode] = useState<ContinuityMode>("strict");
 
   const [result, setResult] = useState<ScenePlanResponse | null>(null);
   const [scenePrompts, setScenePrompts] = useState<ScenePromptMap>({});
@@ -173,6 +175,7 @@ export default function Home() {
           quality,
           provider,
           model,
+          continuity_mode: "off",
         });
 
         setFinalVideo({
@@ -220,7 +223,10 @@ export default function Home() {
     }
   }
 
-  async function renderScene(sceneId: number): Promise<RenderedSceneVideo> {
+  async function renderScene(
+    sceneId: number,
+    referenceFrameFilename: string | null = null
+  ): Promise<RenderedSceneVideo> {
     if (!result) throw new Error("Storyboard is not available.");
 
     const scenePrompt = scenePrompts[sceneId]?.trim();
@@ -231,14 +237,22 @@ export default function Home() {
       prompt: scenePrompt,
       aspect_ratio: result.aspect_ratio,
       duration_seconds: durationSeconds,
-      seed: seed + Math.max(sceneIndex, 0),
+      // Keep the exact same seed across a story. The visual change should come
+      // from the shot prompt and the previous-scene frame, not random seed drift.
+      seed,
       decoder,
       enhance_prompt: false,
-      // Storyboard prompts are already Gemini-generated; avoid enhancing them twice.
-      // Storyboard clips stay at source quality; 1080p is applied once to the final combine.
       quality: "preview",
       provider,
       model,
+      continuity_mode: continuityMode,
+      continuity_id: result.continuity_id,
+      scene_index: Math.max(sceneIndex, 0),
+      scene_count: result.scenes.length,
+      character_bible: result.character_bible,
+      style_bible: result.style_bible,
+      reference_frame_filename: continuityMode === "strict" ? referenceFrameFilename : null,
+      continuity_strength: 0.95,
     });
 
     return {
@@ -253,17 +267,41 @@ export default function Home() {
       mediaInfo: response.media_info,
       estimatedCostUsd: response.estimated_cost_usd,
       qualityNote: response.quality_note,
+      continuityMode: response.continuity_mode,
+      continuityApplied: response.continuity_applied,
+      referenceFrameFilename: response.reference_frame_filename,
+      continuityFrameUrl: response.continuity_frame_url ? absoluteApiUrl(response.continuity_frame_url) : null,
+      continuityFrameFilename: response.continuity_frame_filename,
     };
   }
+
 
   async function handleRenderScene(sceneId: number) {
     try {
       setGeneratingScene(sceneId);
       setError("");
       setFinalVideo(null);
-      setProgressMessage(`Rendering scene ${sceneId} with ${model.toUpperCase()}...`);
 
-      const rendered = await renderScene(sceneId);
+      const sceneIndex = result?.scenes.findIndex((scene) => scene.id === sceneId) ?? -1;
+      let referenceFrameFilename: string | null = null;
+      if (continuityMode === "strict" && sceneIndex > 0 && result) {
+        const previousScene = result.scenes[sceneIndex - 1];
+        const previousVideo = renderedVideos[previousScene.id];
+        referenceFrameFilename = previousVideo?.continuityFrameFilename || null;
+        if (!referenceFrameFilename) {
+          throw new Error(
+            "Strict continuity needs the previous scene first. Render the previous scene, or use Render all & combine to build the continuity chain automatically."
+          );
+        }
+      }
+
+      setProgressMessage(
+        continuityMode === "strict" && referenceFrameFilename
+          ? `Rendering scene ${sceneId} from the previous scene frame...`
+          : `Rendering scene ${sceneId} with ${model.toUpperCase()}...`
+      );
+
+      const rendered = await renderScene(sceneId, referenceFrameFilename);
       setRenderedVideos((current) => ({ ...current, [sceneId]: rendered }));
     } catch (err) {
       setError(errorMessage(err, "Scene rendering failed."));
@@ -272,6 +310,7 @@ export default function Home() {
       setProgressMessage("");
     }
   }
+
 
   async function handleRenderMissingAndCombine() {
     if (!result) return;
@@ -283,17 +322,34 @@ export default function Home() {
 
       const available: RenderedVideoMap = { ...renderedVideos };
       const total = result.scenes.length;
+      let previousFrameFilename: string | null = null;
 
       for (let index = 0; index < total; index += 1) {
         const scene = result.scenes[index];
-        if (available[scene.id]) continue;
+        const existing = available[scene.id];
+        const strictLinkMatches =
+          continuityMode !== "strict" ||
+          index === 0 ||
+          existing?.referenceFrameFilename === previousFrameFilename;
+        const needsRender = !existing || !strictLinkMatches;
 
-        setGeneratingScene(scene.id);
-        setProgressMessage(`Rendering scene ${index + 1} of ${total}...`);
+        if (needsRender) {
+          setGeneratingScene(scene.id);
+          setProgressMessage(
+            continuityMode === "strict" && previousFrameFilename
+              ? `Rendering scene ${index + 1} of ${total} from scene ${index}'s final frame...`
+              : `Rendering scene ${index + 1} of ${total}...`
+          );
 
-        const rendered = await renderScene(scene.id);
-        available[scene.id] = rendered;
-        setRenderedVideos((current) => ({ ...current, [scene.id]: rendered }));
+          const rendered = await renderScene(scene.id, previousFrameFilename);
+          available[scene.id] = rendered;
+          setRenderedVideos((current) => ({ ...current, [scene.id]: rendered }));
+        }
+
+        previousFrameFilename = available[scene.id]?.continuityFrameFilename || null;
+        if (continuityMode === "strict" && index < total - 1 && !previousFrameFilename) {
+          throw new Error(`Scene ${index + 1} did not produce a continuity frame.`);
+        }
       }
 
       setGeneratingScene(null);
@@ -491,9 +547,25 @@ export default function Home() {
                       onChange={(event) => setSceneCount(Number(event.target.value))}
                       className="control"
                     >
-                      {[1, 2, 3, 4, 5, 6].map((count) => (
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((count) => (
                         <option key={count} value={count}>{count} {count === 1 ? "Scene" : "Scenes"}</option>
                       ))}
+                    </select>
+                  )}
+
+                  {mode === "storyboard" && (
+                    <select
+                      value={continuityMode}
+                      disabled={isBusy}
+                      onChange={(event) => {
+                        setContinuityMode(event.target.value as ContinuityMode);
+                        invalidateRenderedMedia();
+                      }}
+                      className="control"
+                    >
+                      <option value="strict">Strict continuity</option>
+                      <option value="balanced">Balanced continuity</option>
+                      <option value="off">Continuity off</option>
                     </select>
                   )}
 
@@ -580,9 +652,11 @@ export default function Home() {
               </div>
 
               <div className="mt-3 text-[11px] text-zinc-600">
-                {quality === "1080p"
-                  ? "Storyboard scenes stay at source quality and the final sequence is upscaled once to 1080-class delivery dimensions."
-                  : "Source preview avoids unnecessary upscaling while you test prompts and scene composition."}
+                {mode === "storyboard" && continuityMode === "strict"
+                  ? "Strict continuity keeps one seed + one character/style bible and conditions every scene after Scene 1 on the previous scene's final frame."
+                  : quality === "1080p"
+                    ? "Storyboard scenes stay at source quality and the final sequence is upscaled once to 1080-class delivery dimensions."
+                    : "Source preview avoids unnecessary upscaling while you test prompts and scene composition."}
               </div>
             </div>
           </form>
@@ -627,6 +701,11 @@ export default function Home() {
                 <p className="mt-2 text-[11px] text-zinc-700">
                   Planner: {result.planner_source === "gemini" ? "Gemini" : result.planner_source === "direct" ? "Local fast path" : "Local fallback"}
                   {result.planner_note ? ` · ${result.planner_note}` : ""}
+                </p>
+                <p className="mt-1 text-[11px] text-emerald-500/70" title={`${result.character_bible}
+
+${result.style_bible}`}>
+                  Identity lock: {continuityMode === "strict" ? "Strict · previous-frame conditioned" : continuityMode === "balanced" ? "Balanced · shared identity + seed" : "Off"}
                 </p>
               </div>
 
@@ -696,6 +775,7 @@ export default function Home() {
                           {video.details} · {video.renderSeconds.toFixed(1)}s render · {video.wallSeconds.toFixed(1)}s wall · {video.provider}
                           {video.gpu ? ` · ${video.gpu}` : ""}
                           {video.mediaInfo.has_audio ? ` · audio ${video.mediaInfo.audio_codec || "present"}` : " · no audio stream"}
+                          {video.continuityMode === "strict" ? (video.continuityApplied ? " · continuity conditioned" : " · continuity anchor") : ""}
                           {video.estimatedCostUsd != null ? ` · est. $${video.estimatedCostUsd.toFixed(4)}` : ""}
                         </div>
                       )}

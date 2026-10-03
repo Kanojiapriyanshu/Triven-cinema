@@ -8,6 +8,7 @@ RenderQuality = Literal["preview", "1080p"]
 VideoProviderName = Literal["huggingface", "modal"]
 VideoModelName = Literal["ltx-2.5", "wan", "minimax"]
 DecoderName = Literal["conv", "diffusion"]
+ContinuityMode = Literal["off", "balanced", "strict"]
 JobStatusName = Literal["queued", "running", "completed", "failed"]
 JobStageName = Literal[
     "queued",
@@ -47,10 +48,13 @@ class ScenePlanResponse(BaseModel):
     plan_quality: PlanQualityReport | None = None
     planner_source: Literal["gemini", "direct", "fallback"] = "gemini"
     planner_note: str | None = None
+    continuity_id: str
+    character_bible: str
+    style_bible: str
 
 
 class VideoGenerationRequest(BaseModel):
-    prompt: str = Field(..., min_length=10, max_length=5000)
+    prompt: str = Field(..., min_length=10, max_length=8000)
     aspect_ratio: AspectRatio = "16:9"
     duration_seconds: float = Field(default=1.0, ge=1.0, le=5.0)
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
@@ -59,6 +63,18 @@ class VideoGenerationRequest(BaseModel):
     quality: RenderQuality = "preview"
     provider: VideoProviderName | None = None
     model: VideoModelName = "ltx-2.5"
+
+    # Multi-scene continuity. `strict` adds LTX first-frame conditioning when a
+    # previous scene frame is supplied; `balanced` keeps the text identity/style
+    # locks and seed without image conditioning.
+    continuity_mode: ContinuityMode = "off"
+    continuity_id: str | None = Field(default=None, max_length=96)
+    scene_index: int | None = Field(default=None, ge=0, le=49)
+    scene_count: int | None = Field(default=None, ge=1, le=50)
+    character_bible: str | None = Field(default=None, max_length=3000)
+    style_bible: str | None = Field(default=None, max_length=3000)
+    reference_frame_filename: str | None = Field(default=None, max_length=255)
+    continuity_strength: float = Field(default=0.95, ge=0.0, le=1.0)
 
 
 class MediaInfo(BaseModel):
@@ -90,11 +106,16 @@ class VideoGenerationResponse(BaseModel):
     estimated_cost_usd: float | None = None
     estimated_cost_per_output_minute_usd: float | None = None
     cost_note: str
+    continuity_mode: ContinuityMode = "off"
+    continuity_applied: bool = False
+    reference_frame_filename: str | None = None
+    continuity_frame_url: str | None = None
+    continuity_frame_filename: str | None = None
 
 
 class FullVideoScene(BaseModel):
     id: int
-    prompt: str = Field(..., min_length=10, max_length=5000)
+    prompt: str = Field(..., min_length=10, max_length=8000)
 
 
 class FullVideoGenerationRequest(BaseModel):
@@ -107,6 +128,11 @@ class FullVideoGenerationRequest(BaseModel):
     quality: RenderQuality = "preview"
     provider: VideoProviderName | None = None
     model: VideoModelName = "ltx-2.5"
+    continuity_mode: ContinuityMode = "strict"
+    continuity_id: str | None = Field(default=None, max_length=96)
+    character_bible: str | None = Field(default=None, max_length=3000)
+    style_bible: str | None = Field(default=None, max_length=3000)
+    continuity_strength: float = Field(default=0.95, ge=0.0, le=1.0)
 
 
 class FullVideoGenerationResponse(BaseModel):
@@ -150,6 +176,8 @@ class GenerationCapabilitiesResponse(BaseModel):
     qualities: list[dict]
     aspect_ratios: list[AspectRatio]
     decoders: list[DecoderName]
+    continuity_modes: list[ContinuityMode]
+    image_conditioning: bool
     max_scene_duration_seconds: float
     async_jobs: bool
     audio_probe: bool

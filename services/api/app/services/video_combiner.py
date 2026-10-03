@@ -27,6 +27,31 @@ def _run_ffmpeg(command: list[str]) -> None:
         )
 
 
+
+def extract_last_frame(input_path: Path, output_path: Path) -> Path:
+    """Extract the final decoded frame as a PNG for scene-to-scene conditioning."""
+    if not input_path.exists():
+        raise VideoCombineError(f"Input video does not exist: {input_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffmpeg",
+        "-y",
+        "-sseof",
+        "-0.08",
+        "-i",
+        str(input_path),
+        "-frames:v",
+        "1",
+        "-vsync",
+        "0",
+        str(output_path),
+    ]
+    _run_ffmpeg(command)
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise VideoCombineError("FFmpeg did not produce a continuity frame.")
+    return output_path
+
 def delivery_dimensions(aspect_ratio: str) -> tuple[int, int]:
     if aspect_ratio == "9:16":
         return 1080, 1920
