@@ -3,116 +3,228 @@ name: triven-cinema
 services:
   api:
     image: triven-cinema-api:local
+
     build:
       context: .
       dockerfile: Dockerfile.api
+
     env_file:
       - .env
+
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+
+    # Internal Docker port.
     expose:
       - "8000"
+
+    # VPS-local debugging only.
+    # NOT exposed publicly.
+    ports:
+      - "127.0.0.1:3334:8000"
+
     volumes:
       - ./storage:/app/storage
+
     init: true
+
     restart: unless-stopped
+
     stop_grace_period: 10m
+
     security_opt:
       - no-new-privileges:true
+
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health/ready"]
+      test:
+        [
+          "CMD",
+          "curl",
+          "-fsS",
+          "http://127.0.0.1:8000/api/v1/health/ready"
+        ]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 20s
+      start_period: 30s
+
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
 
+    networks:
+      - triven_internal
+
+
   web:
+    image: triven-cinema-web:local
+
     build:
       context: ./apps/web
+
       args:
+        # Browser talks to the same public domain:
+        # https://devansh.info/api/...
         NEXT_PUBLIC_API_URL: ""
-        TRIVEN_INTERNAL_API_URL: http://api:8000
+
+        # Server-side/container communication.
+        TRIVEN_INTERNAL_API_URL: "http://api:8000"
+
     environment:
       NODE_ENV: production
+
       NEXT_PUBLIC_API_URL: ""
-      TRIVEN_INTERNAL_API_URL: http://api:8000
+
+      TRIVEN_INTERNAL_API_URL: "http://api:8000"
+
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+
     expose:
       - "3000"
+
+    # VPS-local debugging only.
+    # NOT publicly accessible.
+    ports:
+      - "127.0.0.1:3333:3000"
+
     init: true
+
     depends_on:
       api:
         condition: service_healthy
+
     restart: unless-stopped
+
     stop_grace_period: 30s
+
     security_opt:
       - no-new-privileges:true
+
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
         ]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 20s
+      start_period: 30s
+
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
 
+    networks:
+      - triven_internal
+
+
   caddy:
     image: caddy:2-alpine
+
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+
     volumes:
       - ./deploy/hostinger/Caddyfile:/etc/caddy/Caddyfile:ro
+
       - caddy_data:/data
+
       - caddy_config:/config
+
     depends_on:
       api:
         condition: service_healthy
+
       web:
         condition: service_healthy
+
     restart: unless-stopped
+
     stop_grace_period: 30s
+
+    security_opt:
+      - no-new-privileges:true
+
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
 
+    networks:
+      - triven_internal
+
+
   maintenance:
     image: triven-cinema-api:local
+
     env_file:
       - .env
+
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+
     command:
       - /bin/sh
       - -c
-      - set -eu; while true; do python /app/scripts/backup_state.py; python /app/scripts/cleanup_storage.py --apply; sleep 21600; done
+      - |
+        set -eu
+
+        echo "[maintenance] Triven Cinema maintenance service started"
+
+        while true; do
+          echo "[maintenance] Running backup"
+          python /app/scripts/backup_state.py || true
+
+          echo "[maintenance] Running storage cleanup"
+          python /app/scripts/cleanup_storage.py --apply || true
+
+          echo "[maintenance] Sleeping for 6 hours"
+          sleep 21600
+        done
+
     volumes:
       - ./storage:/app/storage
+
     init: true
+
     depends_on:
       api:
         condition: service_healthy
+
     restart: unless-stopped
+
     stop_grace_period: 30s
+
     security_opt:
       - no-new-privileges:true
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+    networks:
+      - triven_internal
+
+
+networks:
+  triven_internal:
+    driver: bridge
+
 
 volumes:
   caddy_data:
