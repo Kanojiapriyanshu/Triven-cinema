@@ -1,7 +1,9 @@
+import json
+import re
 from dataclasses import dataclass
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.core.config import settings
 from app.schemas.generation import Scene
@@ -26,72 +28,64 @@ class ScenePlannerOutput(BaseModel):
     scenes: list[SceneDraft]
 
 
-@dataclass(frozen=True)
+@dataclass
 class ScenePlanResult:
     scenes: list[Scene]
     source: str
     note: str | None = None
 
 
-_FALLBACK_BEATS = [
-    (
-        "Establishing Shot",
-        "Begin with a clear establishing view that introduces the subject and environment. "
-        "Use smooth cinematic movement and make the main action immediately readable.",
-    ),
-    (
-        "Tracking Continuation",
-        "Continue the same subject, appearance and environment from the previous shot. "
-        "Move closer with a smooth tracking or follow shot while the action naturally progresses.",
-    ),
-    (
-        "Detail and Motion",
-        "Preserve continuity, then emphasize a meaningful visual detail or movement with a medium-close shot. "
-        "Keep the action natural and cinematic rather than static.",
-    ),
-    (
-        "Alternate Perspective",
-        "Continue the same moment from a complementary cinematic angle while preserving character, wardrobe, "
-        "lighting and environment continuity.",
-    ),
-    (
-        "Hero Moment",
-        "Build toward the strongest visual moment of the sequence with confident camera movement and clear subject focus. "
-        "Keep the visual style consistent with all previous shots.",
-    ),
-    (
-        "Resolution Shot",
-        "Finish the sequence with a visually satisfying continuation or reveal. Maintain the same subject, setting, "
-        "lighting and cinematic style, and end on a clean composition.",
-    ),
-]
+def _compact(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
 
 
-def _single_scene(prompt: str) -> list[Scene]:
-    return [
-        Scene(
-            id=1,
-            title="Single Shot",
-            prompt=prompt.strip(),
-            duration_seconds=5,
-        )
+def _local_storyboard(prompt: str, scene_count: int) -> list[Scene]:
+    """Fast deterministic fallback that never blocks the render pipeline."""
+    base = _compact(prompt)
+    scenes: list[Scene] = []
+
+    shot_guidance = [
+        (
+            "Establishing Shot",
+            "Begin with a clear establishing view that introduces the subject and environment. "
+            "Use smooth cinematic movement and make the main action immediately readable.",
+        ),
+        (
+            "Tracking Continuation",
+            "Continue the same subject, appearance and environment from the previous shot. "
+            "Move closer with a smooth tracking or follow shot while the action naturally progresses.",
+        ),
+        (
+            "Detail Progression",
+            "Continue the same moment with a more intimate medium or close shot. Show a meaningful "
+            "detail or action beat while preserving strict visual continuity.",
+        ),
+        (
+            "Cinematic Reveal",
+            "Advance the action with a wider reveal or motivated camera move that adds scale while "
+            "keeping the subject identity and environment consistent.",
+        ),
+        (
+            "Closing Shot",
+            "Finish the sequence with a visually resolved final beat and a deliberate cinematic camera move.",
+        ),
     ]
 
-
-def _fallback_scene_plan(prompt: str, scene_count: int) -> list[Scene]:
-    if scene_count == 1:
-        return _single_scene(prompt)
-
-    scenes: list[Scene] = []
-    clean_prompt = prompt.strip()
     for index in range(scene_count):
-        title, beat = _FALLBACK_BEATS[index % len(_FALLBACK_BEATS)]
+        title, guidance = shot_guidance[min(index, len(shot_guidance) - 1)]
+        if index >= len(shot_guidance):
+            title = "Continuation Shot"
+            guidance = (
+                "Continue the same subject and environment with a new complementary camera angle. "
+                "Progress the action naturally and preserve strict visual continuity."
+            )
+
         scene_prompt = (
-            f"{clean_prompt}\n\n"
-            f"SHOT {index + 1} OF {scene_count}: {beat} "
-            "Maintain strict visual continuity across shots. Include subject action, environment, camera framing, "
-            "camera movement, lighting and atmosphere. No subtitles, logos, text overlays or watermarks unless the "
-            "original request explicitly asks for them. Do not mention output resolution."
+            f"{base}\n\nSHOT {index + 1} OF {scene_count}: {guidance} "
+            "Maintain strict visual continuity across shots. Include subject action, environment, "
+            "camera framing, camera movement, lighting and atmosphere. No subtitles, logos, text "
+            "overlays or watermarks unless the original request explicitly asks for them. Do not "
+            "mention output resolution."
         )
         scenes.append(
             Scene(
@@ -104,8 +98,25 @@ def _fallback_scene_plan(prompt: str, scene_count: int) -> list[Scene]:
     return scenes
 
 
-def _planner_prompt(prompt: str, scene_count: int, aspect_ratio: str) -> str:
-    return f"""
+def _extract_json_text(payload: dict) -> str:
+    candidates = payload.get("candidates") or []
+    if not candidates:
+        raise RuntimeError("Gemini returned no candidates.")
+    parts = ((candidates[0].get("content") or {}).get("parts") or [])
+    text = "".join(str(part.get("text") or "") for part in parts).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    if not text:
+        raise RuntimeError("Gemini returned an empty scene plan.")
+    return text
+
+
+def _gemini_storyboard(prompt: str, scene_count: int, aspect_ratio: str) -> list[Scene]:
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
+
+    planner_prompt = f"""
 You are the cinematic scene-planning engine for Triven Cinema.
 
 Convert the user's idea into exactly {scene_count} video-generation scenes.
@@ -116,94 +127,73 @@ ORIGINAL USER REQUEST:
 TARGET ASPECT RATIO:
 {aspect_ratio}
 
+Return ONLY valid JSON with this exact top-level shape:
+{{
+  "scenes": [
+    {{
+      "title": "short title",
+      "prompt": "generation-ready video prompt",
+      "duration_seconds": 5
+    }}
+  ]
+}}
+
 REQUIREMENTS:
 - Return exactly {scene_count} scenes.
-- Each scene must represent one continuous shot.
-- Maintain visual consistency between scenes.
-- Maintain the same characters, clothing and environment where needed.
-- Clearly describe the main subject, action and environment.
-- Include camera framing and camera movement where appropriate.
-- Include lighting, atmosphere and cinematic visual style.
-- Avoid vague language.
-- Avoid subtitles, text overlays, logos and watermarks unless requested.
-- Each prompt must be directly usable by a video-generation model such as LTX-2.5.
-- Scenes should flow naturally from one to the next.
-- Normally use approximately 5 seconds per scene.
-- Keep every scene prompt below 180 words.
-- Do not mention output resolutions such as 4K, 8K, 1080p or UHD.
-- Resolution, frame rate and aspect ratio are controlled separately by the renderer.
-- Start with the main action, then movement, appearance, environment, camera and lighting.
-
-Return JSON only and follow the supplied schema exactly.
+- Each scene is one continuous shot.
+- Preserve the original request and maintain visual continuity.
+- Describe subject, action, environment, framing, camera movement, lighting and atmosphere.
+- Prompts must be directly usable by LTX-2.5.
+- Normally use 5 seconds per scene, always between 3 and 10 seconds.
+- Keep each prompt below 180 words.
+- No subtitles, logos, text overlays or watermarks unless requested.
+- Do not mention 4K, 8K, 1080p, UHD or unsupported quality claims.
+- Do not include any explanation outside the JSON object.
 """.strip()
-
-
-def _response_text(payload: dict) -> str:
-    candidates = payload.get("candidates") or []
-    if not candidates:
-        raise RuntimeError("Gemini returned no candidates.")
-
-    parts = ((candidates[0].get("content") or {}).get("parts") or [])
-    text = "".join(str(part.get("text") or "") for part in parts).strip()
-    if not text:
-        raise RuntimeError("Gemini returned an empty scene plan.")
-    return text
-
-
-def _generate_with_gemini(
-    prompt: str,
-    scene_count: int,
-    aspect_ratio: str,
-) -> list[Scene]:
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured.")
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"{settings.gemini_model}:generateContent"
     )
-    request_body = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": _planner_prompt(
-                            prompt=prompt,
-                            scene_count=scene_count,
-                            aspect_ratio=aspect_ratio,
-                        )
-                    }
-                ],
-            }
-        ],
-        "generationConfig": {
-            "maxOutputTokens": min(8192, max(1200, scene_count * 900)),
-            "thinkingConfig": {
-                "thinkingLevel": settings.gemini_thinking_level,
-            },
-            "responseMimeType": "application/json",
-            "responseSchema": ScenePlannerOutput.model_json_schema(),
-        },
-    }
 
-    timeout = httpx.Timeout(
-        timeout=settings.gemini_timeout_seconds,
-        connect=min(5.0, settings.gemini_timeout_seconds),
-    )
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(
+    # Direct REST avoids the SDK's automatic retry loop, which previously made
+    # quota errors look like an indefinitely stuck storyboard request.
+    try:
+        response = httpx.post(
             url,
-            headers={
-                "x-goog-api-key": settings.gemini_api_key,
-                "Content-Type": "application/json",
+            params={"key": settings.gemini_api_key},
+            json={
+                "contents": [{"parts": [{"text": planner_prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "maxOutputTokens": 4096,
+                },
             },
-            json=request_body,
+            timeout=httpx.Timeout(settings.gemini_timeout_seconds),
         )
-        response.raise_for_status()
-        payload = response.json()
+    except httpx.TimeoutException as exc:
+        raise RuntimeError("Gemini storyboard request timed out.") from exc
+    except httpx.HTTPError as exc:
+        raise RuntimeError("Gemini storyboard request could not be completed.") from exc
 
-    parsed = ScenePlannerOutput.model_validate_json(_response_text(payload))
+    if response.status_code != 200:
+        safe_detail = ""
+        try:
+            error_payload = response.json().get("error") or {}
+            safe_detail = str(error_payload.get("status") or error_payload.get("message") or "")
+        except Exception:
+            safe_detail = ""
+        # Never include the request URL because it contains the API key.
+        suffix = f" ({safe_detail[:180]})" if safe_detail else ""
+        raise RuntimeError(f"Gemini returned HTTP {response.status_code}{suffix}")
+
+    try:
+        payload = response.json()
+        raw_text = _extract_json_text(payload)
+        parsed = ScenePlannerOutput.model_validate_json(raw_text)
+    except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+        raise RuntimeError("Gemini returned an invalid storyboard JSON response.") from exc
+
     if len(parsed.scenes) != scene_count:
         raise RuntimeError(
             f"Expected {scene_count} scenes but Gemini returned {len(parsed.scenes)}."
@@ -212,67 +202,12 @@ def _generate_with_gemini(
     return [
         Scene(
             id=index + 1,
-            title=scene.title,
-            prompt=scene.prompt,
+            title=_compact(scene.title)[:120] or f"Scene {index + 1}",
+            prompt=_compact(scene.prompt),
             duration_seconds=scene.duration_seconds,
         )
         for index, scene in enumerate(parsed.scenes)
     ]
-
-
-def create_scene_plan_with_meta(
-    prompt: str,
-    scene_count: int,
-    aspect_ratio: str = "16:9",
-    *,
-    force_ai: bool = False,
-) -> ScenePlanResult:
-    # A one-shot storyboard does not need an LLM round-trip unless the user
-    # explicitly asked Triven to enhance a direct prompt.
-    if scene_count == 1 and not force_ai:
-        return ScenePlanResult(
-            scenes=_single_scene(prompt),
-            source="direct",
-            note="Single-scene storyboard used the original prompt directly, so no Gemini quota or latency was needed.",
-        )
-
-    try:
-        scenes = _generate_with_gemini(
-            prompt=prompt,
-            scene_count=scene_count,
-            aspect_ratio=aspect_ratio,
-        )
-        return ScenePlanResult(
-            scenes=scenes,
-            source="gemini",
-            note=None,
-        )
-    except httpx.TimeoutException:
-        return ScenePlanResult(
-            scenes=_fallback_scene_plan(prompt, scene_count),
-            source="fallback",
-            note=(
-                f"Gemini exceeded the {settings.gemini_timeout_seconds:.0f}s planning limit, "
-                "so Triven created an editable local storyboard instead."
-            ),
-        )
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        if status == 429:
-            note = "Gemini quota/rate limit was reached, so Triven created an editable local storyboard instead."
-        else:
-            note = f"Gemini returned HTTP {status}, so Triven created an editable local storyboard instead."
-        return ScenePlanResult(
-            scenes=_fallback_scene_plan(prompt, scene_count),
-            source="fallback",
-            note=note,
-        )
-    except Exception as exc:
-        return ScenePlanResult(
-            scenes=_fallback_scene_plan(prompt, scene_count),
-            source="fallback",
-            note=f"Gemini planning was unavailable ({type(exc).__name__}); Triven created an editable local storyboard instead.",
-        )
 
 
 def create_scene_plan(
@@ -281,10 +216,29 @@ def create_scene_plan(
     aspect_ratio: str = "16:9",
     *,
     force_ai: bool = False,
-) -> list[Scene]:
-    return create_scene_plan_with_meta(
-        prompt=prompt,
-        scene_count=scene_count,
-        aspect_ratio=aspect_ratio,
-        force_ai=force_ai,
-    ).scenes
+) -> ScenePlanResult:
+    clean_prompt = _compact(prompt)
+
+    # One scene does not need an LLM round-trip unless the caller explicitly asks
+    # for prompt enhancement. This saves quota and removes 5-20 seconds of latency.
+    if scene_count == 1 and not force_ai:
+        return ScenePlanResult(
+            scenes=_local_storyboard(clean_prompt, 1),
+            source="direct",
+            note="Single-scene storyboard created locally without spending a Gemini request.",
+        )
+
+    try:
+        scenes = _gemini_storyboard(clean_prompt, scene_count, aspect_ratio)
+        return ScenePlanResult(
+            scenes=scenes,
+            source="gemini",
+            note="Storyboard generated by Gemini.",
+        )
+    except Exception as exc:  # reliability boundary: rendering must remain usable
+        scenes = _local_storyboard(clean_prompt, scene_count)
+        return ScenePlanResult(
+            scenes=scenes,
+            source="fallback",
+            note=f"{str(exc)} Triven created an editable local storyboard instead.",
+        )

@@ -13,8 +13,10 @@ import type {
   VideoGenerationResponse,
 } from "@/lib/types/generation";
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Production defaults to same-origin. Next.js rewrites /api and /media to the
+// loopback-only FastAPI process on the same Mac. This avoids the classic bug
+// where a remote browser interprets "localhost:8000" as the visitor's machine.
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 async function readApiError(
   response: Response,
@@ -62,7 +64,7 @@ export async function generateScenePlan(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
-        "Storyboard planning exceeded 25 seconds. Triven should normally fall back automatically; retry once if the API was restarting."
+        "Storyboard planning timed out. Retry, or use Direct prompt for a single-shot render."
       );
     }
     throw error;

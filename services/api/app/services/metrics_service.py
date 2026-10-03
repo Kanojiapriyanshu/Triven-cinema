@@ -12,6 +12,16 @@ METRICS_FILE = METRICS_DIR / "generations.jsonl"
 _LOCK = Lock()
 
 
+def _rotate_metrics_if_needed() -> None:
+    max_bytes = max(1024 * 1024, int(settings.metrics_max_bytes))
+    if not METRICS_FILE.exists() or METRICS_FILE.stat().st_size < max_bytes:
+        return
+
+    rotated = METRICS_FILE.with_suffix(".jsonl.1")
+    rotated.unlink(missing_ok=True)
+    METRICS_FILE.replace(rotated)
+
+
 def record_generation_metric(payload: dict) -> None:
     METRICS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -21,6 +31,7 @@ def record_generation_metric(payload: dict) -> None:
     }
 
     with _LOCK:
+        _rotate_metrics_if_needed()
         with METRICS_FILE.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
@@ -76,13 +87,17 @@ def summarize_generation_metrics() -> dict:
         }
 
     events: list[dict] = []
-    for line in METRICS_FILE.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
+    metric_files = [METRICS_FILE.with_suffix(".jsonl.1"), METRICS_FILE]
+    for metric_file in metric_files:
+        if not metric_file.exists():
             continue
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+        for line in metric_file.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
 
     render_events = [
         event for event in events if float(event.get("render_seconds") or 0.0) > 0

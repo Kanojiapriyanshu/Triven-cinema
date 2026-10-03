@@ -1,30 +1,17 @@
-# Triven Cinema application-layer deployment
+# Deployment
 
-The GPU/model layer stays on Modal. The application layer can run anywhere that supports Docker.
+For this project, the preferred production target is the user's Mac mini running the application layer natively, with LTX inference on Modal. See [`deploy/mac/README.md`](mac/README.md).
 
-## API container
+Docker remains available as an optional application-layer deployment baseline.
 
-Build from repository root:
+## Docker notes
 
-```bash
-docker build -f Dockerfile.api -t triven-cinema-api .
-```
-
-The API needs the same environment values used locally, especially `GEMINI_API_KEY`, `VIDEO_PROVIDER=modal`, `MODAL_APP_NAME`, and Modal credentials available to the container. Persist `/app/storage` or replace it with object storage/database services before multi-instance production.
-
-## Web container
+The web container uses same-origin `/api` and `/media` URLs and proxies them internally to `http://api:8000`. The API is not published to the host by the production compose file.
 
 ```bash
-docker build \
-  --build-arg NEXT_PUBLIC_API_URL=https://api.example.com \
-  -t triven-cinema-web \
-  apps/web
+docker compose -f docker-compose.production.yml up --build
 ```
 
-## Single-host smoke deployment
+Open `http://localhost:3000`.
 
-```bash
-NEXT_PUBLIC_API_URL=http://localhost:8000 docker compose -f docker-compose.production.yml up --build
-```
-
-This is a deployable application-layer baseline, not a claim of production HA. Before horizontal scaling, move job state/output files from local disk to Postgres/object storage.
+Before any multi-instance deployment, replace local SQLite job state and generated-media storage with shared services such as Postgres and object storage. The current single-instance design intentionally assumes one application server.

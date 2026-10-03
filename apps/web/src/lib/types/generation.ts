@@ -39,7 +39,7 @@ export interface ScenePlanResponse {
   aspect_ratio: AspectRatio;
   scenes: Scene[];
   plan_quality?: PlanQualityReport | null;
-  planner_source?: "direct" | "gemini" | "fallback";
+  planner_source: "gemini" | "direct" | "fallback";
   planner_note?: string | null;
 }
 
@@ -161,6 +161,9 @@ export interface GenerationCapabilitiesResponse {
   async_jobs: boolean;
   audio_probe: boolean;
   cost_tracking_configured: boolean;
+  production_mode: boolean;
+  job_workers: number;
+  job_max_pending: number;
 }
 
 export interface AsyncVideoGenerationResponse {

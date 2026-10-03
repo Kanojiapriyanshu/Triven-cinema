@@ -31,3 +31,6 @@ storage/metrics/*
 storage/jobs/*
 storage/benchmarks/*
 *.zip
+
+storage/logs/*
+storage/backups/*

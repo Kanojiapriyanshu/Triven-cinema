@@ -75,7 +75,9 @@ class HuggingFaceLTXProvider(VideoProvider):
 
         filename = f"ltx-{uuid.uuid4().hex}.mp4"
         destination = GENERATED_DIR / filename
-        shutil.copy2(remote_video_path, destination)
+        temporary = destination.with_suffix(".mp4.part")
+        shutil.copy2(remote_video_path, temporary)
+        temporary.replace(destination)
 
         elapsed = time.perf_counter() - started
 

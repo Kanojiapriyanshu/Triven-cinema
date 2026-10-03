@@ -12,3 +12,7 @@ storage/jobs
 storage/metrics
 storage/benchmarks
 .DS_Store
+
+storage/logs
+
+storage/backups

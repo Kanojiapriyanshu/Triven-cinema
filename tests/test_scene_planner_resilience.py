@@ -1,33 +1,35 @@
 import unittest
 from unittest.mock import patch
 
-import httpx
-
-from app.services.scene_planner import create_scene_plan_with_meta
+from app.services.scene_planner import create_scene_plan
 
 
 class ScenePlannerResilienceTests(unittest.TestCase):
-    def test_single_scene_skips_gemini(self):
-        result = create_scene_plan_with_meta(
-            "A fox walks through snow.",
-            scene_count=1,
-            aspect_ratio="16:9",
-        )
+    def test_single_scene_skips_remote_planner(self):
+        with patch("app.services.scene_planner._gemini_storyboard") as remote:
+            result = create_scene_plan(
+                "A red fox walking through a snowy pine forest at sunrise.",
+                1,
+                "16:9",
+            )
+        remote.assert_not_called()
         self.assertEqual(result.source, "direct")
         self.assertEqual(len(result.scenes), 1)
-        self.assertEqual(result.scenes[0].prompt, "A fox walks through snow.")
+        self.assertIn("red fox", result.scenes[0].prompt.lower())
 
-    @patch("app.services.scene_planner._generate_with_gemini")
-    def test_timeout_falls_back_to_exact_scene_count(self, mocked):
-        mocked.side_effect = httpx.ReadTimeout("slow")
-        result = create_scene_plan_with_meta(
-            "A fox walks through snow.",
-            scene_count=3,
-            aspect_ratio="16:9",
-        )
+    def test_multiscene_falls_back_when_gemini_fails(self):
+        with patch(
+            "app.services.scene_planner._gemini_storyboard",
+            side_effect=RuntimeError("Gemini unavailable"),
+        ):
+            result = create_scene_plan(
+                "A red fox walking through a snowy pine forest at sunrise.",
+                2,
+                "16:9",
+            )
         self.assertEqual(result.source, "fallback")
-        self.assertEqual(len(result.scenes), 3)
-        self.assertIn("editable local storyboard", result.note or "")
+        self.assertEqual(len(result.scenes), 2)
+        self.assertIn("Gemini unavailable", result.note or "")
 
 
 if __name__ == "__main__":

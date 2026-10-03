@@ -8,7 +8,6 @@ RenderQuality = Literal["preview", "1080p"]
 VideoProviderName = Literal["huggingface", "modal"]
 VideoModelName = Literal["ltx-2.5", "wan", "minimax"]
 DecoderName = Literal["conv", "diffusion"]
-PlannerSourceName = Literal["direct", "gemini", "fallback"]
 JobStatusName = Literal["queued", "running", "completed", "failed"]
 JobStageName = Literal[
     "queued",
@@ -46,7 +45,7 @@ class ScenePlanResponse(BaseModel):
     aspect_ratio: AspectRatio
     scenes: list[Scene]
     plan_quality: PlanQualityReport | None = None
-    planner_source: PlannerSourceName = "gemini"
+    planner_source: Literal["gemini", "direct", "fallback"] = "gemini"
     planner_note: str | None = None
 
 
@@ -155,6 +154,9 @@ class GenerationCapabilitiesResponse(BaseModel):
     async_jobs: bool
     audio_probe: bool
     cost_tracking_configured: bool
+    production_mode: bool = False
+    job_workers: int = 1
+    job_max_pending: int = 3
 
 
 class AsyncVideoGenerationResponse(BaseModel):

@@ -1,5 +1,7 @@
 import json
 import subprocess
+
+from app.core.config import settings
 from pathlib import Path
 
 
@@ -21,7 +23,15 @@ def probe_media(path: Path) -> dict:
         "json",
         str(path),
     ]
-    process = subprocess.run(command, capture_output=True, text=True)
+    try:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=max(5, int(settings.ffprobe_timeout_seconds)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise MediaProbeError("ffprobe timed out while inspecting media.") from exc
     if process.returncode != 0:
         raise MediaProbeError(
             "ffprobe failed:\n" + process.stderr[-5000:]

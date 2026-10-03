@@ -1,4 +1,4 @@
-import traceback
+import logging
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -23,7 +23,12 @@ from app.schemas.generation import (
     VideoGenerationRequest,
     VideoGenerationResponse,
 )
-from app.services.job_service import get_job, submit_job, update_job
+from app.services.job_service import (
+    JobQueueFullError,
+    get_job,
+    submit_job,
+    update_job,
+)
 from app.services.media_probe import probe_media
 from app.services.metrics_service import (
     estimate_gpu_cost,
@@ -31,13 +36,15 @@ from app.services.metrics_service import (
     summarize_generation_metrics,
 )
 from app.services.prompt_quality import evaluate_plan_prompt_coverage
-from app.services.scene_planner import create_scene_plan, create_scene_plan_with_meta
+from app.services.scene_planner import create_scene_plan
+from app.services.storage_service import ensure_minimum_free_disk
 from app.services.video_combiner import combine_videos, upscale_to_1080p
 from app.services.video_profiles import source_render_dimensions
 from inference.providers.router import get_video_provider
 
 
 router = APIRouter()
+LOGGER = logging.getLogger("triven.generations")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
 GENERATED_DIR = (PROJECT_ROOT / "storage" / "generated").resolve()
@@ -115,8 +122,9 @@ def _generate_video_impl(
     progress: ProgressCallback | None = None,
 ) -> VideoGenerationResponse:
     if progress:
-        progress("initializing", 8, "Selecting video provider and source profile...")
+        progress("initializing", 8, "Checking local storage and selecting the render provider...")
 
+    ensure_minimum_free_disk()
     provider_key = request.provider or settings.video_provider
     provider = get_video_provider(
         provider_key,
@@ -134,7 +142,7 @@ def _generate_video_impl(
             scene_count=1,
             aspect_ratio=request.aspect_ratio,
             force_ai=True,
-        )[0].prompt
+        ).scenes[0].prompt
         provider_enhance_prompt = False
 
     if progress:
@@ -273,13 +281,16 @@ async def generation_capabilities():
         async_jobs=True,
         audio_probe=True,
         cost_tracking_configured=cost_tracking_configured,
+        production_mode=settings.is_production,
+        job_workers=settings.job_workers,
+        job_max_pending=settings.job_max_pending,
     )
 
 
 @router.post("/plan", response_model=ScenePlanResponse)
 def plan_generation(request: ScenePlanRequest):
     try:
-        plan = create_scene_plan_with_meta(
+        plan = create_scene_plan(
             prompt=request.prompt,
             scene_count=request.scene_count,
             aspect_ratio=request.aspect_ratio,
@@ -297,20 +308,22 @@ def plan_generation(request: ScenePlanRequest):
             planner_note=plan.note,
         )
     except Exception as exc:
-        print("\nSCENE PLANNING ERROR\n--------------------")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        LOGGER.exception("Scene planning failed")
+        detail = str(exc) if settings.debug and not settings.is_production else "Scene planning failed."
+        raise HTTPException(status_code=500, detail=detail) from exc
 
 
 @router.post("/video", response_model=VideoGenerationResponse)
 def generate_video(request: VideoGenerationRequest):
     """Synchronous compatibility endpoint. Prefer /jobs/video in the UI."""
+    if settings.is_production and not settings.enable_sync_render_endpoints:
+        raise HTTPException(status_code=404, detail="Not found.")
     try:
         return _generate_video_impl(request)
     except Exception as exc:
-        print("\nVIDEO GENERATION ERROR\n----------------------")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        LOGGER.exception("Video generation failed")
+        detail = str(exc) if settings.debug and not settings.is_production else "Video generation failed."
+        raise HTTPException(status_code=500, detail=detail) from exc
 
 
 @router.post("/jobs/video", response_model=AsyncVideoGenerationResponse)
@@ -330,7 +343,11 @@ async def create_video_job(request: VideoGenerationRequest):
         result = _generate_video_impl(request, progress=progress)
         return result.model_dump()
 
-    job_id = submit_job("video", payload, runner)
+    try:
+        job_id = submit_job("video", payload, runner)
+    except JobQueueFullError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
     return AsyncVideoGenerationResponse(
         job_id=job_id,
         status="queued",
@@ -349,6 +366,7 @@ async def generation_job_status(job_id: str):
 @router.post("/combine", response_model=CombineScenesResponse)
 def combine_existing_scenes(request: CombineScenesRequest):
     try:
+        ensure_minimum_free_disk()
         video_paths = [
             resolve_generated_video(url)
             for url in request.scene_video_urls
@@ -390,9 +408,9 @@ def combine_existing_scenes(request: CombineScenesRequest):
             media_info=media_info,
         )
     except Exception as exc:
-        print("\nVIDEO COMBINE ERROR\n-------------------")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        LOGGER.exception("Video combine failed")
+        detail = str(exc) if settings.debug and not settings.is_production else "Video combine failed."
+        raise HTTPException(status_code=500, detail=detail) from exc
 
 
 @router.post("/full-video", response_model=FullVideoGenerationResponse)
@@ -401,7 +419,10 @@ def generate_full_video(request: FullVideoGenerationRequest):
 
     Prefer /combine when scene previews already exist so GPU work is not repeated.
     """
+    if settings.is_production and not settings.enable_sync_render_endpoints:
+        raise HTTPException(status_code=404, detail="Not found.")
     try:
+        ensure_minimum_free_disk()
         provider = get_video_provider(
             request.provider or settings.video_provider,
             model=request.model,
@@ -491,13 +512,15 @@ def generate_full_video(request: FullVideoGenerationRequest):
             cost_note=cost_note,
         )
     except Exception as exc:
-        print("\nFULL VIDEO GENERATION ERROR\n---------------------------")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        LOGGER.exception("Full video generation failed")
+        detail = str(exc) if settings.debug and not settings.is_production else "Full video generation failed."
+        raise HTTPException(status_code=500, detail=detail) from exc
 
 
 @router.get("/metrics/summary", response_model=MetricsSummaryResponse)
 async def metrics_summary():
+    if settings.is_production and not settings.enable_metrics_endpoint:
+        raise HTTPException(status_code=404, detail="Not found.")
     return MetricsSummaryResponse.model_validate(summarize_generation_metrics())
 
 

@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -12,16 +13,14 @@ from models import MODEL_ROOT, REQUIRED_MODEL_FILES
 APP_NAME = "triven-cinema-ltx"
 GPU_TYPE = os.getenv("TRIVEN_MODAL_GPU", "B200")
 SCALEDOWN_WINDOW = int(os.getenv("TRIVEN_MODAL_SCALEDOWN_WINDOW", "15"))
+LTX_REPO_REF = os.getenv("TRIVEN_LTX_REPO_REF", "main").strip() or "main"
+if not re.fullmatch(r"[A-Za-z0-9._/-]+", LTX_REPO_REF):
+    raise RuntimeError("TRIVEN_LTX_REPO_REF contains unsupported characters.")
 
 app = modal.App(APP_NAME)
 
 models_volume = modal.Volume.from_name(
     "triven-cinema-models",
-    create_if_missing=True,
-)
-
-outputs_volume = modal.Volume.from_name(
-    "triven-cinema-outputs",
     create_if_missing=True,
 )
 
@@ -33,6 +32,7 @@ image = (
     .uv_pip_install("uv", "huggingface_hub")
     .run_commands(
         "git clone --depth 1 https://github.com/Lightricks/LTX-2.git /opt/LTX-2",
+        f"cd /opt/LTX-2 && git fetch --depth 1 origin {LTX_REPO_REF} && git checkout --detach FETCH_HEAD",
         "cd /opt/LTX-2 && uv sync --extra natten",
     )
     .add_local_python_source("ltx_worker", "models")
@@ -77,7 +77,6 @@ def download_models() -> dict:
     secrets=[hf_secret],
     volumes={
         "/models": models_volume,
-        "/outputs": outputs_volume,
     },
     timeout=60 * 60,
     scaledown_window=SCALEDOWN_WINDOW,
@@ -105,7 +104,10 @@ def generate_video(
         )
 
     started = time.perf_counter()
-    output_path = Path("/outputs") / f"ltx-{uuid.uuid4().hex}.mp4"
+    # The generated clip is returned immediately to the Mac application server.
+    # Keep it on ephemeral container storage so the Modal output volume does not
+    # grow indefinitely. Model weights remain persistent in triven-cinema-models.
+    output_path = Path("/tmp") / f"ltx-{uuid.uuid4().hex}.mp4"
 
     command = build_command(
         prompt=prompt,
@@ -121,11 +123,12 @@ def generate_video(
     if not output_path.exists():
         raise RuntimeError("LTX finished without producing an MP4 file.")
 
-    outputs_volume.commit()
     elapsed = time.perf_counter() - started
+    video_bytes = output_path.read_bytes()
+    output_path.unlink(missing_ok=True)
 
     return {
-        "video_bytes": output_path.read_bytes(),
+        "video_bytes": video_bytes,
         "seed": seed,
         "prompt": prompt,
         "render_details": (
@@ -142,5 +145,6 @@ def main():
     print(f"Triven Cinema Modal app: {APP_NAME}")
     print(f"GPU: {GPU_TYPE}")
     print(f"Scaledown window: {SCALEDOWN_WINDOW}s")
+    print(f"LTX repo ref: {LTX_REPO_REF}")
     print("Prepare models: modal run modal/app.py::download_models")
     print("Deploy: modal deploy modal/app.py")

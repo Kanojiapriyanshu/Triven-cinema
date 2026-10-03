@@ -20,4 +20,4 @@ RUN mkdir -p /app/storage/generated /app/storage/metrics /app/storage/jobs
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--app-dir", "/app/services/api", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--app-dir", "/app/services/api", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-server-header", "--timeout-graceful-shutdown", "600"]

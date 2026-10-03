@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from app.core.config import settings
 from app.services.media_probe import probe_media
 
 
@@ -10,11 +11,15 @@ class VideoCombineError(RuntimeError):
 
 
 def _run_ffmpeg(command: list[str]) -> None:
-    process = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=max(30, int(settings.ffmpeg_timeout_seconds)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise VideoCombineError("FFmpeg timed out while processing the video.") from exc
 
     if process.returncode != 0:
         raise VideoCombineError(

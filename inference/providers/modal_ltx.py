@@ -68,7 +68,9 @@ class ModalLTXProvider(VideoProvider):
 
         filename = f"ltx-modal-{uuid.uuid4().hex}.mp4"
         destination = GENERATED_DIR / filename
-        destination.write_bytes(video_bytes)
+        temporary = destination.with_suffix(".mp4.part")
+        temporary.write_bytes(video_bytes)
+        temporary.replace(destination)
 
         wall_elapsed = time.perf_counter() - started
         elapsed = float(result.get("render_seconds") or 0.0)

@@ -197,7 +197,7 @@ export default function Home() {
 
     try {
       setPlanning(true);
-      setProgressMessage("Gemini is converting your idea into generation-ready shots...");
+      setProgressMessage("Creating generation-ready storyboard shots...");
 
       const response = await generateScenePlan({
         prompt: cleanPrompt,
@@ -616,13 +616,6 @@ export default function Home() {
                 <p className="mt-2 text-sm text-zinc-600">
                   {result.scenes.length} scenes · {result.aspect_ratio} · {plannedDuration}s AI plan · {durationSeconds}s render per scene
                 </p>
-                {result.planner_note && (
-                  <p
-                    className={`mt-2 text-[11px] ${result.planner_source === "fallback" ? "text-amber-500/80" : "text-zinc-600"}`}
-                  >
-                    {result.planner_note}
-                  </p>
-                )}
                 {result.plan_quality && (
                   <p className="mt-2 text-[11px] text-zinc-700" title={result.plan_quality.note}>
                     Storyboard prompt coverage: {Math.round(result.plan_quality.coverage_score * 100)}%
@@ -631,6 +624,10 @@ export default function Home() {
                       : " · key prompt terms preserved"}
                   </p>
                 )}
+                <p className="mt-2 text-[11px] text-zinc-700">
+                  Planner: {result.planner_source === "gemini" ? "Gemini" : result.planner_source === "direct" ? "Local fast path" : "Local fallback"}
+                  {result.planner_note ? ` · ${result.planner_note}` : ""}
+                </p>
               </div>
 
               <button
