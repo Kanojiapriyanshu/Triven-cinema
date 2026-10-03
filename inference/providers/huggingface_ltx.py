@@ -1,20 +1,28 @@
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
 from gradio_client import Client
 
-
-load_dotenv()
+from inference.providers.base import VideoGenerationResult, VideoProvider
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+load_dotenv(
+    dotenv_path=PROJECT_ROOT / ".env",
+    override=False,
+)
+
 GENERATED_DIR = PROJECT_ROOT / "storage" / "generated"
 
 
-class HuggingFaceLTXProvider:
+class HuggingFaceLTXProvider(VideoProvider):
+    name = "huggingface-zero-gpu"
+
     def __init__(self):
         self.token = os.getenv("HF_TOKEN")
         self.space = os.getenv(
@@ -23,14 +31,9 @@ class HuggingFaceLTXProvider:
         )
 
         if not self.token:
-            raise RuntimeError(
-                "HF_TOKEN is missing from .env"
-            )
+            raise RuntimeError("HF_TOKEN is missing from .env")
 
-        GENERATED_DIR.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
     def generate(
         self,
@@ -41,12 +44,10 @@ class HuggingFaceLTXProvider:
         seed: int = 42,
         decoder: str = "conv",
         enhance_prompt: bool = False,
-    ) -> dict:
+    ) -> VideoGenerationResult:
+        started = time.perf_counter()
 
-        client = Client(
-            self.space,
-            token=self.token,
-        )
+        client = Client(self.space, token=self.token)
 
         prepared_prompt = client.predict(
             prompt,
@@ -69,26 +70,21 @@ class HuggingFaceLTXProvider:
         )
 
         remote_video_path = result[0]
-        seed_used = result[1]
-        render_details = result[2]
+        seed_used = int(result[1])
+        render_details = str(result[2])
 
-        filename = (
-            f"ltx-{uuid.uuid4().hex}.mp4"
+        filename = f"ltx-{uuid.uuid4().hex}.mp4"
+        destination = GENERATED_DIR / filename
+        shutil.copy2(remote_video_path, destination)
+
+        elapsed = time.perf_counter() - started
+
+        return VideoGenerationResult(
+            filename=filename,
+            path=str(destination),
+            seed=seed_used,
+            render_details=render_details,
+            render_seconds=elapsed,
+            prompt=str(prepared_prompt),
+            provider=self.name,
         )
-
-        destination = (
-            GENERATED_DIR / filename
-        )
-
-        shutil.copy2(
-            remote_video_path,
-            destination,
-        )
-
-        return {
-            "filename": filename,
-            "path": str(destination),
-            "seed": seed_used,
-            "render_details": render_details,
-            "prompt": prepared_prompt,
-        }

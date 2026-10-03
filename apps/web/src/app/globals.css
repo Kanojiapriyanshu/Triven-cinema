@@ -5,13 +5,13 @@
 }
 
 html {
-  background: #08090b;
+  background: #070809;
 }
 
 body {
   margin: 0;
-  background: #08090b;
-  color: #ffffff;
+  background: #070809;
+  color: #fff;
   font-family: Arial, Helvetica, sans-serif;
 }
 
@@ -19,6 +19,27 @@ button,
 select,
 textarea {
   font: inherit;
+}
+
+button,
+a,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.control {
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0c0d0f;
+  padding: 0 0.875rem;
+  font-size: 0.75rem;
+  color: #d4d4d8;
+  outline: none;
+}
+
+.control:disabled {
+  opacity: 0.5;
 }
 
 ::selection {

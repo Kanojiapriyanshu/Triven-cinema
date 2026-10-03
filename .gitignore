@@ -25,3 +25,5 @@ storage/final/*
 # IDE
 .vscode/
 .idea/
+
+storage/metrics/*
