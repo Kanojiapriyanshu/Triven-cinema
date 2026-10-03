@@ -167,13 +167,13 @@ It checks Python syntax, unit tests, shell syntax and the frontend build when de
 
 ## Application-layer deployment baseline
 
-The preferred production deployment is native macOS/launchd; see `deploy/mac/README.md`. Docker remains available as an optional baseline:
+The production target is a **Hostinger Linux VPS** running the application layer with Docker Compose, while LTX inference remains on **Modal GPU**. See `deploy/hostinger/README.md`.
 
 ```bash
-docker compose -f docker-compose.production.yml up --build
+./scripts/deploy_hostinger.sh
 ```
 
-The browser uses same-origin API/media paths; do not bake `http://localhost:8000` into `NEXT_PUBLIC_API_URL` for a remote-facing build. See `deploy/README.md`.
+The browser uses same-origin `/api` and `/media` routes through Caddy. FastAPI and Next.js are not published directly to the internet.
 
 For multi-instance production, move generated media/job state from local disk to object storage/Postgres before scaling horizontally.
 
@@ -209,34 +209,39 @@ These are not silently claimed as complete because the recording/source does not
 
 ---
 
-## Native Mac mini production server (preferred for this project)
+## Hostinger VPS production server
 
-The current production target is **one Mac mini for the application/orchestration layer** and **Modal for LTX GPU inference**. Do not run the 65+ GB LTX model on the Mac.
+The current production target is **one Hostinger Linux VPS for the application/orchestration layer** and **Modal for LTX GPU inference**. The large LTX model remains on Modal and is not loaded on the VPS.
 
-The hardened production path added to this repository uses:
+The production path is:
 
 ```text
-Caddy / Cloudflare Access
-        ↓
-Next.js production server · 127.0.0.1:3000
-        ↓ same-origin rewrites
-FastAPI · 127.0.0.1:8000 · 1 worker
-        ↓
-SQLite jobs + local generated MP4s + Gemini/fallback planner + Modal GPU
+Internet / HTTPS
+      ↓
+Caddy on Hostinger VPS · ports 80/443
+      ↓
+  ┌───────────────┬────────────────┐
+  ↓               ↓                ↓
+Next.js :3000   FastAPI :8000    /media
+                  ↓
+     SQLite jobs + generated media
+                  ↓
+         Gemini/fallback planner
+                  ↓
+             Modal GPU / LTX 2.5
 ```
 
-Important production fixes included:
+Production behavior:
 
-- FastAPI no longer mounts the entire `storage/` directory. Only `storage/generated/` is public; the jobs SQLite database and render metrics are private.
-- Remote browsers use same-origin `/api` and `/media` routes instead of trying to call `localhost:8000` on the visitor's computer.
-- Native launchd services run `next start` and Uvicorn without dev reloaders.
-- Uvicorn is intentionally kept at **one worker** because jobs use a process-local executor plus SQLite.
-- Paid render jobs are bounded (`JOB_WORKERS=1`, `JOB_MAX_PENDING=3` by default).
-- Production can disable synchronous render endpoints that bypass the queue.
-- Gemini storyboard planning has a local fast path/fallback so a quota error or timeout does not block rendering.
-- Old previews/finals/jobs are cleaned automatically to protect the Mac's limited disk.
-- Readiness checks validate FFmpeg, storage writability and minimum free disk.
-- Modal render output uses ephemeral container storage so the Modal output volume does not grow forever.
+- Caddy is the only public-facing service.
+- FastAPI and Next.js stay on the private Docker network.
+- `/api/*` and `/media/*` are routed directly to FastAPI; all other traffic goes to Next.js.
+- Modal authentication uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the VPS `.env`.
+- Paid render jobs remain bounded (`JOB_WORKERS=1`, `JOB_MAX_PENDING=3` by default).
+- Only generated media is public; jobs SQLite and metrics stay private.
+- Health checks, Docker restart policies and log rotation are enabled.
+- Generated previews/finals are retained according to `.env` limits and cleaned by the maintenance container.
+- SQLite/metrics state is backed up before deployments and periodically by the maintenance container.
 - Production exception responses are sanitized and API docs are disabled.
 
 Start with:
@@ -244,17 +249,16 @@ Start with:
 ```bash
 cp .env.production.example .env
 chmod 600 .env
-# add your real secrets/rates
-source .venv/bin/activate
-python scripts/production_preflight.py
-./scripts/install_mac_server.sh
-./scripts/status_mac_server.sh
+# Fill TRIVEN_DOMAIN, Gemini/Modal credentials and provider settings.
+python3 scripts/production_preflight.py
+./scripts/deploy_hostinger.sh
+./scripts/status_hostinger.sh
 ```
 
-For the complete Mac setup, power/sleep settings, HTTPS, access control, cleanup and update procedure, read:
+Full setup, DNS, firewall, deployment, logs, updates and backup guidance:
 
 ```text
-deploy/mac/README.md
+deploy/hostinger/README.md
 ```
 
-**Do not expose FastAPI port 8000 to the internet.** The web server and API bind to loopback in the native production scripts. Put Caddy or Cloudflare Tunnel/Access in front of the Next.js server when remote access is required.
+**Do not publish ports 3000 or 8000 on the VPS firewall.** Only SSH, HTTP and HTTPS should be publicly reachable.

@@ -82,7 +82,7 @@ def initialize_job_store() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_generation_jobs_updated_at ON generation_jobs(updated_at)"
             )
             # In-process jobs cannot survive a process restart. Mark them explicitly
-            # failed so the UI never polls forever after launchd restarts the API.
+            # failed so the UI never polls forever after the API container restarts.
             connection.execute(
                 """
                 UPDATE generation_jobs
@@ -254,7 +254,7 @@ def submit_job(
             safe_error = (
                 str(exc)
                 if settings.debug and not settings.is_production
-                else "Generation failed. Check the Mac server logs for details."
+                else "Generation failed. Check the application server logs for details."
             )
             update_job(
                 job_id,

@@ -1,103 +1,103 @@
-# Triven Cinema production audit — Mac mini server
+# Triven Cinema production audit — Hostinger VPS
 
-Scope: current single-Mac application server + Modal GPU inference architecture.
+## Production architecture
 
-## Production shape
-
-The Mac mini is the **application/orchestration server**, not the LTX GPU server:
+Triven Cinema now targets a **single Hostinger Linux VPS** for the web/API/orchestration layer and **Modal** for LTX 2.5 GPU inference.
 
 ```text
-HTTPS / access control
-  -> Next.js (127.0.0.1:3000)
-  -> FastAPI (127.0.0.1:8000, one worker)
-  -> SQLite jobs + local generated media
-  -> Gemini with local storyboard fallback
-  -> Modal on-demand LTX GPU
+Internet
+  |
+  v
+Caddy :80/:443
+  |--------------------|
+  v                    v
+Next.js :3000       FastAPI :8000
+                        |
+                        +-- SQLite job state
+                        +-- generated media on VPS storage
+                        +-- Gemini storyboard planner / local fallback
+                        +-- Modal API -> LTX 2.5 GPU rendering
 ```
 
-This is intentionally a **single-instance** design. Do not add multiple Uvicorn workers without first moving the in-process render queue and job state to shared infrastructure.
+The VPS does not need a GPU and does not store LTX model weights.
 
-## Critical issues found and fixed
+## Production issues addressed
 
-### 1. Entire storage directory was public
+### 1. Application ports were directly exposable
 
-Previous `StaticFiles` mounted all of `storage/` at `/media`, which included `storage/jobs/jobs.sqlite3` and `storage/metrics/generations.jsonl`.
+FastAPI and Next.js should not be public production listeners.
 
-**Fix:** only `storage/generated/` is mounted publicly at `/media/generated`.
+**Fix:** Docker Compose uses `expose` for ports 8000/3000. Only Caddy publishes 80/443.
 
-### 2. Production scripts were development servers
+### 2. Remote browsers could resolve localhost incorrectly
 
-Previous scripts used Uvicorn `--reload` and `next dev`.
+A browser on another computer must never receive an API URL such as `http://localhost:8000`.
 
-**Fix:** dedicated production scripts use one Uvicorn worker and `next start`, both loopback-only. launchd keeps them alive.
+**Fix:** the web app uses same-origin `/api` and `/media` paths. Caddy routes those paths to FastAPI.
 
-### 3. Remote-browser localhost bug
+### 3. Generated media and internal state needed separation
 
-The frontend defaulted to `http://localhost:8000`. On a remote user's browser, that means the remote user's computer, not the server Mac.
+SQLite job state, metrics, backups and logs must not be publicly downloadable.
 
-**Fix:** browser requests are same-origin (`/api`, `/media`). Next.js rewrites them to the Mac's loopback FastAPI service. Caddy can proxy API/media directly for efficiency.
+**Fix:** FastAPI only exposes generated media under `/media/generated`; internal storage remains private.
 
-### 4. Paid GPU queue could be spammed
+### 4. Paid GPU work needed bounded concurrency
 
-The in-process executor allowed multiple paid jobs and had an unbounded pending queue; synchronous render endpoints bypassed it entirely.
+Unbounded concurrent jobs can consume Modal credits quickly.
 
-**Fix:** configurable bounded queue, one paid render worker by default, HTTP 429 when full, and production option to disable synchronous paid render endpoints.
+**Fix:** production defaults to one render worker with a small pending queue. Synchronous paid-render endpoints are disabled in the production profile.
 
-### 5. Gemini planning could block or exhaust quota
+### 5. Storyboard planning could block the product
 
-The prior SDK path retried errors and could leave the UI waiting. A one-scene storyboard also spent a Gemini request unnecessarily.
+Gemini quota errors, slow responses or request failures previously left the UI waiting.
 
-**Fix:** one scene uses a local fast path; multi-scene planning uses a direct REST request with a hard timeout and deterministic editable fallback on quota/HTTP/timeout errors.
+**Fix:** single-scene requests use the prompt directly; multi-scene planning uses a bounded remote request and falls back to an editable local storyboard.
 
-### 6. SQLite connections were not explicitly closed
+### 6. Container/process recovery was not production-safe
 
-Python's SQLite connection context manager commits/rolls back but does not close the connection by itself, producing resource warnings under tests.
+Development reloaders and manually started terminals are not suitable for a VPS.
 
-**Fix:** all job-store connections now use explicit closing; WAL + busy timeout + indexes were added.
+**Fix:** Docker Compose uses restart policies, health checks, init handling and graceful shutdown windows.
 
-### 7. Mac disk could grow without bound
+### 7. VPS storage could grow without bound
 
-Generated MP4s, job history, metrics and service logs had no server lifecycle policy.
+Generated previews/finals, jobs, metrics and logs can eventually fill a VPS disk.
 
-**Fix:** preview/final retention, job pruning, metrics rotation, log rotation, periodic launchd maintenance, free-disk readiness check, and pre-render disk guard.
+**Fix:** retention limits, free-disk checks, scheduled maintenance, backup pruning and Docker log rotation are included.
 
-### 8. Modal output volume would keep generated clips
+### 8. Deployments needed state protection
 
-The function committed each temporary generated clip to a persistent Modal output volume even though the clip was immediately returned to the Mac.
+Rebuilding containers must not silently destroy job state or media.
 
-**Fix:** generated Modal clips now use ephemeral `/tmp`; only model weights remain persistent.
+**Fix:** `storage/` is bind-mounted from the VPS host and a state backup is attempted before each deploy. Caddy certificate data is stored in named volumes.
 
-### 9. Production errors/debug/docs leaked too much information
+### 9. Modal authentication needed server-safe credentials
 
-Debug/docs and raw exception details were appropriate for development but not for a public server.
+A production VPS should not depend on a developer's personal Modal config file.
 
-**Fix:** production disables docs/OpenAPI, sanitizes main render errors, and adds basic security headers/request IDs.
+**Fix:** production uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` from the private `.env` file.
 
-### 10. No server process supervision
+### 10. HTTPS and reverse proxy configuration were missing
 
-There was no native macOS service definition, reboot recovery, or log location.
+**Fix:** Caddy is included in the production Compose stack and automatically manages TLS after DNS points to the VPS.
 
-**Fix:** launchd installers are included for both per-user LaunchAgents and optional boot-before-login LaunchDaemons.
+## Required production checks
 
-## High-priority operational requirements still outside application code
+Before deployment:
 
-1. Put Caddy or Cloudflare Tunnel/Access in front of the web server before public exposure.
-2. Do not expose ports 8000 or 3000 directly to the internet; Caddy/Cloudflare should be the public entry point.
-3. Use authentication/access control before allowing public users to trigger paid GPU jobs.
-4. Move the project from Desktop to `~/Services/triven-cinema` before treating the Mac as a long-lived unattended server.
-5. Configure macOS sleep/power-restart behavior for a server.
-6. Keep an off-device backup/Time Machine backup for important final videos and `.env` secrets.
-7. Pin `TRIVEN_LTX_REPO_REF` to a validated LTX-2 commit/tag instead of `main` for reproducible Modal builds.
-8. Run actual H100/H200/B200 benchmarks before deciding the final GPU/cost profile.
+1. Use an Ubuntu LTS Hostinger VPS with Docker Engine and Docker Compose.
+2. Point `TRIVEN_DOMAIN` DNS to the VPS.
+3. Allow only SSH, TCP 80, TCP/UDP 443 publicly; do not expose 3000/8000.
+4. Copy `.env.production.example` to `.env`, fill secrets, and run `chmod 600 .env`.
+5. Use a dedicated Modal production token.
+6. Run `python3 scripts/production_preflight.py` and fix every `[FAIL]`.
+7. Deploy with `./scripts/deploy_hostinger.sh`.
+8. Verify with `./scripts/status_hostinger.sh` and a short paid render.
+9. Enable Hostinger snapshots/backups; local state backups do not protect against total VPS/disk loss.
+10. Add application authentication or an access gateway before allowing untrusted users to trigger paid renders.
 
-## Architecture limits that remain by design
+## Current scaling boundary
 
-These are not bugs for the current single-Mac MVP, but they block horizontal/high-availability scaling:
+The current queue is process-local and job state uses SQLite. This is intentionally a **single-VPS / single-API-instance** architecture.
 
-- Job queue executor is process-local.
-- Job state is SQLite on the Mac.
-- Generated media is local disk on the Mac.
-- No user/account database or app-level authorization is implemented; access control should currently be at Caddy/Cloudflare.
-- A running Modal render cannot be transparently resumed if the Mac/API process is killed mid-job.
-
-If Triven Cinema later needs multiple application servers, migrate job orchestration to a durable queue, job state to Postgres, media to object storage, and introduce real application authentication before scaling out.
+Before horizontal scaling, migrate job state/queue to shared infrastructure such as Postgres + Redis and move generated media to object storage such as S3/R2.

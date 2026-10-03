@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app:/app/services/api
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl \
+    && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -16,8 +16,11 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY services /app/services
 COPY inference /app/inference
 COPY video /app/video
-RUN mkdir -p /app/storage/generated /app/storage/metrics /app/storage/jobs
+COPY modal /app/modal
+COPY scripts/cleanup_storage.py /app/scripts/cleanup_storage.py
+COPY scripts/backup_state.py /app/scripts/backup_state.py
+RUN mkdir -p /app/storage/generated /app/storage/metrics /app/storage/jobs /app/storage/backups /app/storage/logs
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--app-dir", "/app/services/api", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-server-header", "--timeout-graceful-shutdown", "600"]
+CMD ["uvicorn", "app.main:app", "--app-dir", "/app/services/api", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header", "--timeout-graceful-shutdown", "600"]

@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "services" / "api"))
-
-from app.core.config import settings  # noqa: E402
-
-
+ENV_PATH = ROOT / ".env"
 ERRORS: list[str] = []
 WARNINGS: list[str] = []
 
@@ -31,172 +28,191 @@ def fail(message: str) -> None:
     print(f"[FAIL] {message}")
 
 
-def command_exists(name: str) -> bool:
-    return shutil.which(name) is not None
+def read_env() -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not ENV_PATH.exists():
+        return values
+    for raw in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
 
 
-def check_env() -> None:
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        fail(".env is missing. Copy .env.production.example to .env and add secrets.")
-        return
-
-    mode = stat.S_IMODE(env_file.stat().st_mode)
-    if mode & 0o077:
-        warn(f".env permissions are {oct(mode)}. Run: chmod 600 {env_file}")
-    else:
-        ok(".env permissions are private")
-
-    if not settings.is_production:
-        fail(f"APP_ENV must be production for server mode (current: {settings.app_env!r})")
-    else:
-        ok("APP_ENV=production")
-
-    if settings.debug:
-        fail("DEBUG must be false in production")
-    else:
-        ok("DEBUG=false")
-
-    if settings.video_provider != "modal":
-        warn(f"VIDEO_PROVIDER is {settings.video_provider!r}; Modal is recommended for production")
-    else:
-        ok("VIDEO_PROVIDER=modal")
-
-    if not settings.gemini_api_key:
-        warn("GEMINI_API_KEY is empty; storyboard mode will use the local fallback")
-    else:
-        ok("Gemini key configured")
-
-    if not settings.modal_app_name or not settings.modal_function_name:
-        fail("Modal app/function name is missing")
-    else:
-        ok("Modal app/function configured")
-
-    if settings.triven_ltx_repo_ref == "main":
-        warn("TRIVEN_LTX_REPO_REF=main is not reproducible; pin the validated LTX-2 commit/tag before long-lived production")
-    else:
-        ok(f"LTX repository ref pinned to {settings.triven_ltx_repo_ref}")
-
-    if settings.enable_sync_render_endpoints:
-        warn("ENABLE_SYNC_RENDER_ENDPOINTS=true bypasses the bounded job queue")
-    else:
-        ok("Synchronous paid render endpoints disabled")
-
-
-def check_runtime() -> None:
-    if not (ROOT / ".venv" / "bin" / "python").exists():
-        fail(".venv/bin/python is missing")
-    else:
-        ok("Python virtualenv present")
-
-    for command in ("ffmpeg", "ffprobe", "node", "npm"):
-        if command_exists(command):
-            ok(f"{command} available")
-        else:
-            fail(f"{command} not found in PATH")
-
-    if not (ROOT / "apps" / "web" / ".next").exists():
-        warn("Next.js production build is missing; install script will build it")
-    else:
-        ok("Next.js production build present")
-
-    if command_exists("modal"):
-        try:
-            completed = subprocess.run(
-                ["modal", "config", "show"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if completed.returncode == 0:
-                ok("Modal CLI authentication/config detected")
-            else:
-                warn("Modal CLI is installed but `modal config show` failed")
-        except Exception:
-            warn("Could not validate Modal CLI config")
-    else:
-        warn("Modal CLI command not found; Python Modal auth may still exist, but validate before production")
-
-
-def check_disk_and_location() -> None:
-    storage = ROOT / "storage"
-    storage.mkdir(parents=True, exist_ok=True)
-    usage = shutil.disk_usage(storage)
-    free_gb = usage.free / (1024**3)
-    if free_gb < settings.minimum_free_disk_gb:
-        fail(
-            f"Only {free_gb:.1f} GiB free; minimum configured is {settings.minimum_free_disk_gb:.1f} GiB"
-        )
-    else:
-        ok(f"Disk free: {free_gb:.1f} GiB")
-
-    root_text = str(ROOT)
-    if "/Desktop/" in root_text or root_text.endswith("/Desktop"):
-        warn(
-            "Project is under Desktop. For a long-running macOS service, move it to "
-            "~/Services/triven-cinema to avoid Desktop/TCC/iCloud surprises."
-        )
-    else:
-        ok("Project is outside Desktop/Documents protected folders")
-
-
-def check_git_secrets() -> None:
-    if not (ROOT / ".git").exists():
-        return
+def command_ok(*command: str) -> bool:
     try:
-        tracked = subprocess.run(
-            ["git", "ls-files", ".env", ".env.local", "apps/web/.env.local"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        ).stdout.strip()
-        if tracked:
-            fail(f"Secret environment file is tracked by git: {tracked}")
-        else:
-            ok("No common secret env files tracked by git")
+        return subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        ).returncode == 0
     except Exception:
-        warn("Could not verify git secret-file tracking")
+        return False
 
 
+def port_in_use(port: int) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.3)
+    try:
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        sock.close()
 
-def check_listeners() -> None:
-    if not command_exists("lsof"):
-        return
-    for port in (8000, 3000):
-        try:
-            result = subprocess.run(
-                ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except Exception:
-            continue
-        if result.returncode != 0 or not result.stdout.strip():
-            continue
-        lines = result.stdout.splitlines()[1:]
-        public = [line for line in lines if f"*:{port}" in line or f"0.0.0.0:{port}" in line]
-        if public:
-            warn(
-                f"Port {port} is currently listening on all interfaces. Production scripts bind it to 127.0.0.1."
-            )
-        else:
-            ok(f"Existing listener on port {port} is not wildcard-bound")
+
+def hostname_resolves(hostname: str) -> bool:
+    try:
+        socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+        return True
+    except socket.gaierror:
+        return False
+
 
 def main() -> int:
-    print("Triven Cinema macOS production preflight")
+    print("Triven Cinema Hostinger VPS production preflight")
     print(f"Project: {ROOT}")
-    check_env()
-    check_runtime()
-    check_disk_and_location()
-    check_git_secrets()
-    check_listeners()
+
+    if sys.platform.startswith("linux"):
+        ok("Linux host detected")
+    else:
+        warn(f"Current host is {sys.platform!r}; production target is a Hostinger Linux VPS")
+
+    if not ENV_PATH.exists():
+        fail(".env is missing. Copy .env.production.example to .env and add secrets.")
+        env = {}
+    else:
+        env = read_env()
+        mode = stat.S_IMODE(ENV_PATH.stat().st_mode)
+        if mode & 0o077:
+            warn(f".env permissions are {oct(mode)}; run: chmod 600 .env")
+        else:
+            ok(".env permissions are private")
+
+    required = [
+        "TRIVEN_DOMAIN",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "MODAL_APP_NAME",
+        "MODAL_FUNCTION_NAME",
+    ]
+    for key in required:
+        if env.get(key):
+            ok(f"{key} configured")
+        else:
+            fail(f"{key} is missing")
+
+    domain = env.get("TRIVEN_DOMAIN", "").strip()
+    if domain:
+        parsed = urlparse(domain if "://" in domain else f"https://{domain}")
+        if "://" in domain:
+            fail("TRIVEN_DOMAIN must be a hostname only, for example cinema.example.com (no https://)")
+        elif not parsed.hostname or parsed.hostname != domain:
+            fail("TRIVEN_DOMAIN is not a valid hostname")
+        elif hostname_resolves(domain):
+            ok(f"DNS resolves for {domain}")
+        else:
+            warn(f"DNS does not currently resolve for {domain}; Caddy HTTPS cannot issue a public certificate yet")
+
+        frontend_url = env.get("FRONTEND_URL", "").rstrip("/")
+        expected_url = f"https://{domain}"
+        if frontend_url == expected_url:
+            ok("FRONTEND_URL matches TRIVEN_DOMAIN")
+        else:
+            warn(f"FRONTEND_URL should normally be {expected_url!r}")
+
+    if env.get("APP_ENV", "").lower() in {"production", "prod"}:
+        ok("APP_ENV=production")
+    else:
+        fail("APP_ENV must be production")
+
+    if env.get("DEBUG", "").lower() in {"false", "0", "no"}:
+        ok("DEBUG=false")
+    else:
+        fail("DEBUG must be false")
+
+    if not env.get("CORS_ORIGINS", "").strip():
+        ok("CORS_ORIGINS is empty for same-origin production traffic")
+    else:
+        warn("CORS_ORIGINS is set; same-origin Hostinger deployment normally does not need CORS")
+
+    if env.get("VIDEO_PROVIDER") == "modal":
+        ok("VIDEO_PROVIDER=modal")
+    else:
+        warn("VIDEO_PROVIDER is not modal")
+
+    if env.get("ENABLE_SYNC_RENDER_ENDPOINTS", "true").lower() in {"false", "0", "no"}:
+        ok("Synchronous paid render endpoints disabled")
+    else:
+        warn("ENABLE_SYNC_RENDER_ENDPOINTS should be false in production")
+
+    if shutil.which("docker"):
+        ok("docker available")
+        if command_ok("docker", "compose", "version"):
+            ok("docker compose available")
+        else:
+            fail("docker compose is unavailable")
+    else:
+        fail("docker is not installed")
+
+    compose_file = ROOT / "docker-compose.production.yml"
+    if compose_file.exists() and shutil.which("docker"):
+        if command_ok("docker", "compose", "-f", str(compose_file), "config", "-q"):
+            ok("docker-compose.production.yml validates")
+        else:
+            fail("docker-compose.production.yml failed validation; check .env values")
+
+    storage = ROOT / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    if os.access(storage, os.W_OK):
+        ok("storage directory is writable")
+    else:
+        fail("storage directory is not writable")
+
+    free_gb = shutil.disk_usage(storage).free / (1024**3)
+    try:
+        minimum = float(env.get("MINIMUM_FREE_DISK_GB", "10") or 10)
+    except ValueError:
+        minimum = 10.0
+    if free_gb >= minimum:
+        ok(f"Disk free: {free_gb:.1f} GiB")
+    else:
+        fail(f"Only {free_gb:.1f} GiB free; configured minimum is {minimum:.1f} GiB")
+
+    if env.get("GEMINI_API_KEY"):
+        ok("GEMINI_API_KEY configured")
+    else:
+        warn("GEMINI_API_KEY is empty; multi-scene planning will use the local fallback")
+
+    if env.get("TRIVEN_LTX_REPO_REF", "main") == "main":
+        warn("TRIVEN_LTX_REPO_REF=main is not reproducible; pin a validated commit/tag")
+    else:
+        ok("LTX repository revision is pinned")
+
+    if (ROOT / ".git").exists():
+        tracked = subprocess.run(
+            ["git", "ls-files", ".env"], cwd=ROOT, capture_output=True, text=True, check=False
+        ).stdout.strip()
+        if tracked:
+            fail(".env is tracked by git")
+        else:
+            ok(".env is not tracked by git")
+
+    for port in (80, 443):
+        if port_in_use(port):
+            warn(f"Port {port} is already in use. This is normal during an update if Caddy is already running.")
+        else:
+            ok(f"Port {port} is available")
+
+    if shutil.which("ufw"):
+        ok("UFW command available")
+    else:
+        warn("ufw is not installed; configure Hostinger firewall or an equivalent host firewall")
 
     print(f"\nSummary: {len(ERRORS)} error(s), {len(WARNINGS)} warning(s)")
-    if ERRORS:
-        return 1
-    return 0
+    return 1 if ERRORS else 0
 
 
 if __name__ == "__main__":

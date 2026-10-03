@@ -23,7 +23,7 @@ def ensure_minimum_free_disk() -> float:
     minimum = max(1.0, float(settings.minimum_free_disk_gb))
     if free_gb < minimum:
         raise StorageCapacityError(
-            f"Mac server disk is low ({free_gb:.1f} GiB free; {minimum:.1f} GiB required). "
+            f"Application server disk is low ({free_gb:.1f} GiB free; {minimum:.1f} GiB required). "
             "Run storage cleanup before starting another paid render."
         )
     return free_gb

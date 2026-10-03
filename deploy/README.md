@@ -1,17 +1,17 @@
 # Deployment
 
-For this project, the preferred production target is the user's Mac mini running the application layer natively, with LTX inference on Modal. See [`deploy/mac/README.md`](mac/README.md).
+The production target for Triven Cinema is a **Hostinger Linux VPS** for the application layer and **Modal** for LTX GPU inference.
 
-Docker remains available as an optional application-layer deployment baseline.
+Use the Hostinger deployment guide:
 
-## Docker notes
-
-The web container uses same-origin `/api` and `/media` URLs and proxies them internally to `http://api:8000`. The API is not published to the host by the production compose file.
-
-```bash
-docker compose -f docker-compose.production.yml up --build
+```text
+deploy/hostinger/README.md
 ```
 
-Open `http://localhost:3000`.
+The production Docker Compose stack keeps FastAPI and Next.js private and exposes only Caddy on ports 80/443. Browser traffic stays same-origin, while `/api/*` and `/media/*` are routed to FastAPI internally.
 
-Before any multi-instance deployment, replace local SQLite job state and generated-media storage with shared services such as Postgres and object storage. The current single-instance design intentionally assumes one application server.
+```bash
+./scripts/deploy_hostinger.sh
+```
+
+Before any multi-instance deployment, replace local SQLite job state and generated-media storage with shared services such as Postgres and object storage. The current design intentionally assumes one application VPS.

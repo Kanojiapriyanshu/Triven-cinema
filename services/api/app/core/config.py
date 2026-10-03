@@ -40,13 +40,13 @@ class Settings(BaseSettings):
     default_decoder: str = "conv"
     default_scene_duration_seconds: float = 1.0
 
-    # Single-Mac production safety. One worker avoids duplicate in-memory queues
+    # Single-VPS production safety. One worker avoids duplicate in-memory queues
     # and prevents accidental parallel paid GPU renders.
     job_workers: int = 1
     job_max_pending: int = 3
     job_retention_days: int = 14
 
-    # The Mac mini has limited local disk. Preview clips should age out quickly;
+    # Keep VPS local storage bounded. Preview clips should age out quickly;
     # final renders are kept longer by default.
     preview_retention_days: int = 3
     final_retention_days: int = 30

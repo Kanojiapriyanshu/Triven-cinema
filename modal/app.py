@@ -104,7 +104,7 @@ def generate_video(
         )
 
     started = time.perf_counter()
-    # The generated clip is returned immediately to the Mac application server.
+    # The generated clip is returned immediately to the application server.
     # Keep it on ephemeral container storage so the Modal output volume does not
     # grow indefinitely. Model weights remain persistent in triven-cinema-models.
     output_path = Path("/tmp") / f"ltx-{uuid.uuid4().hex}.mp4"

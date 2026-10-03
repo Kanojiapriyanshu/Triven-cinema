@@ -14,8 +14,8 @@ import type {
 } from "@/lib/types/generation";
 
 // Production defaults to same-origin. Next.js rewrites /api and /media to the
-// loopback-only FastAPI process on the same Mac. This avoids the classic bug
-// where a remote browser interprets "localhost:8000" as the visitor's machine.
+// private FastAPI service behind the same public origin. This avoids the classic
+// bug where a remote browser interprets "localhost:8000" as the visitor's machine.
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 async function readApiError(

@@ -1,19 +1,25 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 export PYTHONPATH="$ROOT_DIR:$ROOT_DIR/services/api"
 
+if command -v python >/dev/null 2>&1; then
+  PYTHON_BIN=python
+else
+  PYTHON_BIN=python3
+fi
+
 echo "[1/4] Python syntax"
-python -m compileall -q services/api/app inference modal scripts tests
+"$PYTHON_BIN" -m compileall -q services/api/app inference modal scripts tests
 
 echo "[2/4] Unit tests"
-python -m unittest discover -s tests -p 'test_*.py' -v
+"$PYTHON_BIN" -m unittest discover -s tests -p 'test_*.py' -v
 
 echo "[3/4] Shell scripts"
 for file in scripts/*.sh; do
-  sh -n "$file"
+  bash -n "$file"
 done
 
 echo "[4/4] Frontend build"

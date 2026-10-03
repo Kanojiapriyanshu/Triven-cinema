@@ -12,13 +12,13 @@ From the repository root, run the API first and then:
 
 The browser uses same-origin `/api` and `/media` URLs. `next.config.ts` rewrites them to `http://127.0.0.1:8000`, so you normally do **not** need `NEXT_PUBLIC_API_URL`.
 
-## Native Mac production
+## Hostinger VPS production
 
-The repository-level production scripts build and start this app on loopback:
+The production Docker stack builds this app with the internal API URL set to `http://api:8000`. Caddy terminates HTTPS and routes browser requests on the public domain.
 
 ```bash
-NEXT_PUBLIC_API_URL="" TRIVEN_INTERNAL_API_URL="http://127.0.0.1:8000" npm run build
-../../scripts/run_web_prod.sh
+cd ../..
+./scripts/deploy_hostinger.sh
 ```
 
-For the full launchd/Caddy setup, see `../../deploy/mac/README.md`.
+For the full VPS deployment flow, see `../../deploy/hostinger/README.md`.
