@@ -127,45 +127,6 @@ services:
       - triven_internal
 
 
-  caddy:
-    image: caddy:2-alpine
-
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-
-    volumes:
-      - ./deploy/hostinger/Caddyfile:/etc/caddy/Caddyfile:ro
-
-      - caddy_data:/data
-
-      - caddy_config:/config
-
-    depends_on:
-      api:
-        condition: service_healthy
-
-      web:
-        condition: service_healthy
-
-    restart: unless-stopped
-
-    stop_grace_period: 30s
-
-    security_opt:
-      - no-new-privileges:true
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "5"
-
-    networks:
-      - triven_internal
-
-
   maintenance:
     image: triven-cinema-api:local
 

@@ -1,24 +1,43 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 import {
   absoluteApiUrl,
   combineSceneVideos,
+  connectYouTube,
+  createBillingPortal,
+  createCheckout,
+  createFactoryGenerationJob,
   createVideoGenerationJob,
+  disconnectYouTube,
   generateScenePlan,
+  getBillingCatalog,
+  getBillingMe,
+  getGenerationCapabilities,
+  getYouTubeStatus,
+  verifyCheckout,
+  waitForFactoryGenerationJob,
   waitForVideoGenerationJob,
 } from "@/lib/api/cinema";
 import type {
   AspectRatio,
+  AudioMode,
+  BillingCatalogResponse,
+  BillingMeResponse,
   ContinuityMode,
   DecoderName,
+  FactoryGenerationResponse,
+  GenerationCapabilitiesResponse,
   GenerationMode,
   RenderedSceneVideo,
   RenderQuality,
   ScenePlanResponse,
   VideoModelName,
   VideoProviderName,
+  YouTubePrivacy,
+  YouTubeStatusResponse,
 } from "@/lib/types/generation";
 
 type ScenePromptMap = Record<number, string>;
@@ -27,6 +46,7 @@ type RenderedVideoMap = Record<number, RenderedSceneVideo>;
 type FinalVideo = {
   url: string;
   downloadUrl: string;
+  filename: string;
   qualityNote: string;
   label: string;
   hasAudio: boolean;
@@ -34,12 +54,20 @@ type FinalVideo = {
   dimensions: string;
   estimatedCostUsd?: number | null;
   gpu?: string | null;
+  youtubeUrl?: string | null;
+  youtubePrivacy?: string | null;
 } | null;
 
+const DURATION_OPTIONS: Record<RenderQuality, number[]> = {
+  preview: [1, 3, 5, 10],
+  "1080p": [5, 10, 15, 20, 30],
+  "4k": [5, 10, 15],
+};
+
+const FACTORY_TARGETS = [30, 60, 120, 180, 300];
+
 function Spinner() {
-  return (
-    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" />
-  );
+  return <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" />;
 }
 
 function PlayIcon() {
@@ -53,22 +81,7 @@ function PlayIcon() {
 function DownloadIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
-      <path
-        d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SparklesIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
-      <path d="m12 3 1.4 4.6L18 9l-4.6 1.4L12 15l-1.4-4.6L6 9l4.6-1.4L12 3Z" fill="currentColor" />
-      <path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" fill="currentColor" />
+      <path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -83,13 +96,28 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+function formatCredits(seconds: number) {
+  if (seconds >= 60) return `${(seconds / 60).toFixed(seconds % 60 === 0 ? 0 : 1)} min`;
+  return `${seconds}s`;
+}
+
+function qualityLabel(quality: RenderQuality) {
+  if (quality === "4k") return "4K master";
+  if (quality === "1080p") return "1080p master";
+  return "Source preview";
+}
+
 export default function Home() {
   const [prompt, setPrompt] = useState("");
-  const [mode, setMode] = useState<GenerationMode>("storyboard");
+  const [mode, setMode] = useState<GenerationMode>("factory");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("16:9");
   const [sceneCount, setSceneCount] = useState(2);
-  const [durationSeconds, setDurationSeconds] = useState(1);
-  const [quality, setQuality] = useState<RenderQuality>("preview");
+  const [durationSeconds, setDurationSeconds] = useState(15);
+  const [factoryTargetSeconds, setFactoryTargetSeconds] = useState(30);
+  const [factorySceneSeconds, setFactorySceneSeconds] = useState(15);
+  const [quality, setQuality] = useState<RenderQuality>("1080p");
+  const [audioMode, setAudioMode] = useState<AudioMode>("mastered");
+  const [audioDirection, setAudioDirection] = useState("Natural synchronized ambience and Foley matching every visible action.");
   const [provider, setProvider] = useState<VideoProviderName>("modal");
   const [model, setModel] = useState<VideoModelName>("ltx-2.5");
   const [decoder, setDecoder] = useState<DecoderName>("conv");
@@ -97,38 +125,88 @@ export default function Home() {
   const [enhancePrompt, setEnhancePrompt] = useState(false);
   const [continuityMode, setContinuityMode] = useState<ContinuityMode>("strict");
 
+  const [publishToYouTube, setPublishToYouTube] = useState(false);
+  const [youtubeTitle, setYoutubeTitle] = useState("");
+  const [youtubeDescription, setYoutubeDescription] = useState("");
+  const [youtubePrivacy, setYoutubePrivacy] = useState<YouTubePrivacy>("private");
+
+  const [capabilities, setCapabilities] = useState<GenerationCapabilitiesResponse | null>(null);
+  const [billingCatalog, setBillingCatalog] = useState<BillingCatalogResponse | null>(null);
+  const [billingMe, setBillingMe] = useState<BillingMeResponse | null>(null);
+  const [youtube, setYoutube] = useState<YouTubeStatusResponse | null>(null);
+
   const [result, setResult] = useState<ScenePlanResponse | null>(null);
   const [scenePrompts, setScenePrompts] = useState<ScenePromptMap>({});
   const [renderedVideos, setRenderedVideos] = useState<RenderedVideoMap>({});
+  const [factoryResult, setFactoryResult] = useState<FactoryGenerationResponse | null>(null);
   const [finalVideo, setFinalVideo] = useState<FinalVideo>(null);
 
   const [editingScene, setEditingScene] = useState<number | null>(null);
   const [planning, setPlanning] = useState(false);
   const [directGenerating, setDirectGenerating] = useState(false);
+  const [factoryGenerating, setFactoryGenerating] = useState(false);
   const [generatingScene, setGeneratingScene] = useState<number | null>(null);
   const [creatingFinal, setCreatingFinal] = useState(false);
+  const [integrationBusy, setIntegrationBusy] = useState(false);
   const [progressMessage, setProgressMessage] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const isBusy =
-    planning || directGenerating || generatingScene !== null || creatingFinal;
-
+  const durationOptions = DURATION_OPTIONS[quality];
+  const isBusy = planning || directGenerating || factoryGenerating || generatingScene !== null || creatingFinal;
   const renderedSceneCount = Object.keys(renderedVideos).length;
+  const allScenesRendered = !!result && result.scenes.length > 0 && result.scenes.every((scene) => Boolean(renderedVideos[scene.id]));
+  const plannedDuration = useMemo(() => result ? result.scenes.length * durationSeconds : 0, [result, durationSeconds]);
 
-  const allScenesRendered =
-    !!result &&
-    result.scenes.length > 0 &&
-    result.scenes.every((scene) => Boolean(renderedVideos[scene.id]));
+  useEffect(() => {
+    let active = true;
+    async function bootstrap() {
+      const [caps, catalog, billing, yt] = await Promise.allSettled([
+        getGenerationCapabilities(),
+        getBillingCatalog(),
+        getBillingMe(),
+        getYouTubeStatus(),
+      ]);
+      if (!active) return;
+      if (caps.status === "fulfilled") setCapabilities(caps.value);
+      if (catalog.status === "fulfilled") setBillingCatalog(catalog.value);
+      if (billing.status === "fulfilled") setBillingMe(billing.value);
+      if (yt.status === "fulfilled") setYoutube(yt.value);
+    }
+    void bootstrap();
 
-  const plannedDuration = useMemo(() => {
-    if (!result) return 0;
-    return result.scenes.reduce((total, scene) => total + scene.duration_seconds, 0);
-  }, [result]);
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("session_id");
+    if (params.get("checkout") === "success" && sessionId) {
+      void verifyCheckout(sessionId)
+        .then(async (status) => {
+          if (!active) return;
+          setNotice(status.paid ? `Payment confirmed. ${formatCredits(status.balance_seconds)} generation credits available.` : "Payment is still processing.");
+          setBillingMe(await getBillingMe());
+        })
+        .catch((err) => active && setError(errorMessage(err, "Unable to verify payment.")));
+    }
+    if (params.get("youtube") === "connected") {
+      setNotice("YouTube channel connected. Factory jobs can now publish automatically.");
+      void getYouTubeStatus().then((status) => active && setYoutube(status)).catch(() => undefined);
+    }
+    if (params.has("checkout") || params.has("youtube")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const options = DURATION_OPTIONS[quality];
+    if (!options.includes(durationSeconds)) setDurationSeconds(options[Math.min(2, options.length - 1)]);
+    if (!options.includes(factorySceneSeconds)) setFactorySceneSeconds(options[options.length - 1]);
+  }, [quality, durationSeconds, factorySceneSeconds]);
 
   function resetOutput() {
     setResult(null);
     setScenePrompts({});
     setRenderedVideos({});
+    setFactoryResult(null);
     setFinalVideo(null);
     setEditingScene(null);
     setProgressMessage("");
@@ -139,32 +217,102 @@ export default function Home() {
     setFinalVideo(null);
   }
 
-  async function generateThroughJob(
-    payload: Parameters<typeof createVideoGenerationJob>[0]
-  ) {
+  async function refreshBilling() {
+    try { setBillingMe(await getBillingMe()); } catch { /* optional integration */ }
+  }
+
+  async function generateThroughJob(payload: Parameters<typeof createVideoGenerationJob>[0]) {
     const started = await createVideoGenerationJob(payload);
-    return waitForVideoGenerationJob(started.job_id, (job) => {
-      setProgressMessage(`${job.message} ${job.progress}%`);
-    });
+    return waitForVideoGenerationJob(started.job_id, (job) => setProgressMessage(`${job.message} ${job.progress}%`));
+  }
+
+  function finalFromSceneResponse(response: Awaited<ReturnType<typeof generateThroughJob>>): FinalVideo {
+    return {
+      url: absoluteApiUrl(response.video_url),
+      downloadUrl: absoluteApiUrl(response.download_url),
+      filename: response.filename,
+      qualityNote: response.quality_note,
+      label: `${response.provider} · ${response.chunk_count} LTX chunk${response.chunk_count === 1 ? "" : "s"} · ${response.render_seconds.toFixed(1)}s render`,
+      hasAudio: response.media_info.has_audio,
+      audioCodec: response.media_info.audio_codec,
+      dimensions: `${response.media_info.width ?? "?"}×${response.media_info.height ?? "?"}`,
+      estimatedCostUsd: response.estimated_cost_usd,
+      gpu: response.gpu,
+    };
+  }
+
+  async function handleFactory(cleanPrompt: string) {
+    if (publishToYouTube && (!youtube?.enabled || !youtube.connected)) {
+      throw new Error("Connect a YouTube channel before enabling automatic publishing.");
+    }
+    setFactoryGenerating(true);
+    setProgressMessage("Starting the AI video factory...");
+    try {
+      const started = await createFactoryGenerationJob({
+        prompt: cleanPrompt,
+        target_duration_seconds: factoryTargetSeconds,
+        scene_duration_seconds: factorySceneSeconds,
+        aspect_ratio: aspectRatio,
+        quality,
+        audio_mode: audioMode,
+        audio_direction: audioDirection.trim() || null,
+        provider,
+        model,
+        decoder,
+        seed,
+        continuity_mode: continuityMode,
+        continuity_strength: 0.95,
+        enhance_prompt: enhancePrompt,
+        publish_to_youtube: publishToYouTube,
+        youtube_title: youtubeTitle.trim() || null,
+        youtube_description: youtubeDescription,
+        youtube_privacy: youtubePrivacy,
+        youtube_tags: [],
+        youtube_category_id: "22",
+        youtube_publish_at: null,
+      });
+      const response = await waitForFactoryGenerationJob(started.job_id, (job) => setProgressMessage(`${job.message} ${job.progress}%`));
+      setFactoryResult(response);
+      setFinalVideo({
+        url: absoluteApiUrl(response.final_video_url),
+        downloadUrl: absoluteApiUrl(response.final_download_url),
+        filename: response.final_filename,
+        qualityNote: response.quality_note,
+        label: `${response.scene_count} scenes · ${response.chunk_count} LTX chunks · ${response.provider} · ${response.total_render_seconds.toFixed(1)}s GPU render`,
+        hasAudio: response.has_audio,
+        audioCodec: response.has_audio ? "AAC / generated audio" : null,
+        dimensions: `${response.width ?? "?"}×${response.height ?? "?"}`,
+        estimatedCostUsd: response.estimated_cost_usd,
+        gpu: response.gpu,
+        youtubeUrl: response.youtube_url,
+        youtubePrivacy: response.youtube_privacy,
+      });
+      await refreshBilling();
+    } finally {
+      setFactoryGenerating(false);
+      setProgressMessage("");
+    }
   }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const cleanPrompt = prompt.trim();
-
     if (!cleanPrompt) {
       setError("Describe the video you want to create.");
       return;
     }
-
     setError("");
+    setNotice("");
     resetOutput();
 
-    if (mode === "direct") {
-      try {
+    try {
+      if (mode === "factory") {
+        await handleFactory(cleanPrompt);
+        return;
+      }
+      if (mode === "direct") {
         setDirectGenerating(true);
-        setProgressMessage("Sending your prompt directly to LTX 2.5...");
-
+        setProgressMessage("Rendering your prompt with LTX 2.5...");
         const response = await generateThroughJob({
           prompt: cleanPrompt,
           aspect_ratio: aspectRatio,
@@ -173,76 +321,49 @@ export default function Home() {
           decoder,
           enhance_prompt: enhancePrompt,
           quality,
+          audio_mode: audioMode,
+          audio_direction: audioDirection.trim() || null,
           provider,
           model,
           continuity_mode: "off",
         });
-
-        setFinalVideo({
-          url: absoluteApiUrl(response.video_url),
-          downloadUrl: absoluteApiUrl(response.download_url),
-          qualityNote: response.quality_note,
-          label: `${response.provider} · ${response.render_seconds.toFixed(1)}s render · ${response.wall_seconds.toFixed(1)}s wall`,
-          hasAudio: response.media_info.has_audio,
-          audioCodec: response.media_info.audio_codec,
-          dimensions: `${response.media_info.width ?? "?"}×${response.media_info.height ?? "?"}`,
-          estimatedCostUsd: response.estimated_cost_usd,
-          gpu: response.gpu,
-        });
-      } catch (err) {
-        setError(errorMessage(err, "Direct generation failed."));
-      } finally {
-        setDirectGenerating(false);
-        setProgressMessage("");
+        setFinalVideo(finalFromSceneResponse(response));
+        await refreshBilling();
+        return;
       }
-      return;
-    }
 
-    try {
       setPlanning(true);
-      setProgressMessage("Creating generation-ready storyboard shots...");
-
-      const response = await generateScenePlan({
-        prompt: cleanPrompt,
-        aspect_ratio: aspectRatio,
-        scene_count: sceneCount,
-      });
-
+      setProgressMessage("Creating continuity-locked storyboard shots with audio direction...");
+      const response = await generateScenePlan({ prompt: cleanPrompt, aspect_ratio: aspectRatio, scene_count: sceneCount });
       setResult(response);
-      setScenePrompts(
-        response.scenes.reduce((current, scene) => {
-          current[scene.id] = scene.prompt;
-          return current;
-        }, {} as ScenePromptMap)
-      );
+      setScenePrompts(response.scenes.reduce((current, scene) => {
+        current[scene.id] = scene.prompt;
+        return current;
+      }, {} as ScenePromptMap));
     } catch (err) {
-      setError(errorMessage(err, "Unable to create the storyboard."));
+      setError(errorMessage(err, "Generation failed."));
     } finally {
       setPlanning(false);
+      setDirectGenerating(false);
       setProgressMessage("");
     }
   }
 
-  async function renderScene(
-    sceneId: number,
-    referenceFrameFilename: string | null = null
-  ): Promise<RenderedSceneVideo> {
+  async function renderScene(sceneId: number, referenceFrameFilename: string | null = null): Promise<RenderedSceneVideo> {
     if (!result) throw new Error("Storyboard is not available.");
-
     const scenePrompt = scenePrompts[sceneId]?.trim();
     if (!scenePrompt) throw new Error("This scene needs a prompt before rendering.");
-
     const sceneIndex = result.scenes.findIndex((scene) => scene.id === sceneId);
     const response = await generateThroughJob({
       prompt: scenePrompt,
       aspect_ratio: result.aspect_ratio,
       duration_seconds: durationSeconds,
-      // Keep the exact same seed across a story. The visual change should come
-      // from the shot prompt and the previous-scene frame, not random seed drift.
       seed,
       decoder,
       enhance_prompt: false,
-      quality: "preview",
+      quality,
+      audio_mode: "native",
+      audio_direction: audioDirection.trim() || null,
       provider,
       model,
       continuity_mode: continuityMode,
@@ -254,7 +375,6 @@ export default function Home() {
       reference_frame_filename: continuityMode === "strict" ? referenceFrameFilename : null,
       continuity_strength: 0.95,
     });
-
     return {
       url: absoluteApiUrl(response.video_url),
       downloadUrl: absoluteApiUrl(response.download_url),
@@ -267,6 +387,8 @@ export default function Home() {
       mediaInfo: response.media_info,
       estimatedCostUsd: response.estimated_cost_usd,
       qualityNote: response.quality_note,
+      audioMode: response.audio_mode,
+      chunkCount: response.chunk_count,
       continuityMode: response.continuity_mode,
       continuityApplied: response.continuity_applied,
       referenceFrameFilename: response.reference_frame_filename,
@@ -275,124 +397,66 @@ export default function Home() {
     };
   }
 
+  async function ensureScenesThrough(targetSceneId?: number): Promise<RenderedVideoMap> {
+    if (!result) throw new Error("Storyboard is not available.");
+    const next: RenderedVideoMap = { ...renderedVideos };
+    let previousFrame: string | null = null;
+    for (const scene of result.scenes) {
+      if (next[scene.id]) {
+        previousFrame = next[scene.id].continuityFrameFilename;
+      } else {
+        setGeneratingScene(scene.id);
+        setProgressMessage(`Rendering scene ${scene.id}/${result.scenes.length}...`);
+        const rendered = await renderScene(scene.id, previousFrame);
+        next[scene.id] = rendered;
+        setRenderedVideos({ ...next });
+        previousFrame = rendered.continuityFrameFilename;
+      }
+      if (targetSceneId && scene.id === targetSceneId) break;
+    }
+    return next;
+  }
 
   async function handleRenderScene(sceneId: number) {
+    setError("");
     try {
-      setGeneratingScene(sceneId);
-      setError("");
-      setFinalVideo(null);
-
-      const sceneIndex = result?.scenes.findIndex((scene) => scene.id === sceneId) ?? -1;
-      let referenceFrameFilename: string | null = null;
-      if (continuityMode === "strict" && sceneIndex > 0 && result) {
-        const previousScene = result.scenes[sceneIndex - 1];
-        const previousVideo = renderedVideos[previousScene.id];
-        referenceFrameFilename = previousVideo?.continuityFrameFilename || null;
-        if (!referenceFrameFilename) {
-          throw new Error(
-            "Strict continuity needs the previous scene first. Render the previous scene, or use Render all & combine to build the continuity chain automatically."
-          );
-        }
-      }
-
-      setProgressMessage(
-        continuityMode === "strict" && referenceFrameFilename
-          ? `Rendering scene ${sceneId} from the previous scene frame...`
-          : `Rendering scene ${sceneId} with ${model.toUpperCase()}...`
-      );
-
-      const rendered = await renderScene(sceneId, referenceFrameFilename);
-      setRenderedVideos((current) => ({ ...current, [sceneId]: rendered }));
+      await ensureScenesThrough(sceneId);
+      await refreshBilling();
     } catch (err) {
-      setError(errorMessage(err, "Scene rendering failed."));
+      setError(errorMessage(err, "Scene render failed."));
     } finally {
       setGeneratingScene(null);
       setProgressMessage("");
     }
   }
 
-
   async function handleRenderMissingAndCombine() {
     if (!result) return;
-
+    setError("");
+    setCreatingFinal(true);
     try {
-      setCreatingFinal(true);
-      setFinalVideo(null);
-      setError("");
-
-      const available: RenderedVideoMap = { ...renderedVideos };
-      const total = result.scenes.length;
-      let previousFrameFilename: string | null = null;
-
-      for (let index = 0; index < total; index += 1) {
-        const scene = result.scenes[index];
-        const existing = available[scene.id];
-        const strictLinkMatches =
-          continuityMode !== "strict" ||
-          index === 0 ||
-          existing?.referenceFrameFilename === previousFrameFilename;
-        const needsRender = !existing || !strictLinkMatches;
-
-        if (needsRender) {
-          setGeneratingScene(scene.id);
-          setProgressMessage(
-            continuityMode === "strict" && previousFrameFilename
-              ? `Rendering scene ${index + 1} of ${total} from scene ${index}'s final frame...`
-              : `Rendering scene ${index + 1} of ${total}...`
-          );
-
-          const rendered = await renderScene(scene.id, previousFrameFilename);
-          available[scene.id] = rendered;
-          setRenderedVideos((current) => ({ ...current, [scene.id]: rendered }));
-        }
-
-        previousFrameFilename = available[scene.id]?.continuityFrameFilename || null;
-        if (continuityMode === "strict" && index < total - 1 && !previousFrameFilename) {
-          throw new Error(`Scene ${index + 1} did not produce a continuity frame.`);
-        }
-      }
-
+      const completed = await ensureScenesThrough();
       setGeneratingScene(null);
-      setProgressMessage("Combining rendered clips with FFmpeg...");
-
-      const orderedUrls = result.scenes.map((scene) => available[scene.id]?.url);
-      if (orderedUrls.some((url) => !url)) {
-        throw new Error("One or more scenes could not be rendered.");
-      }
-
+      setProgressMessage("Composing scenes, delivery quality and final audio master...");
       const combined = await combineSceneVideos({
-        scene_video_urls: orderedUrls as string[],
+        scene_video_urls: result.scenes.map((scene) => completed[scene.id].url),
         aspect_ratio: result.aspect_ratio,
         quality,
+        audio_mode: audioMode,
       });
-
-      const sceneCosts = Object.values(available)
-        .map((item) => item.estimatedCostUsd)
-        .filter((value): value is number => value != null);
-      const totalEstimatedCost = sceneCosts.length
-        ? sceneCosts.reduce((total, value) => total + value, 0)
-        : null;
-      const gpuNames = Array.from(
-        new Set(
-          Object.values(available)
-            .map((item) => item.gpu)
-            .filter((value): value is string => Boolean(value))
-        )
-      );
-
       setFinalVideo({
         url: absoluteApiUrl(combined.final_video_url),
         downloadUrl: absoluteApiUrl(combined.final_download_url),
+        filename: combined.final_filename,
         qualityNote: combined.quality_note,
-        label: `${combined.scene_count} scenes · FFmpeg final`,
+        label: `${combined.scene_count} scenes · ${qualityLabel(combined.quality)} · ${combined.audio_mode} audio`,
         hasAudio: combined.media_info.has_audio,
         audioCodec: combined.media_info.audio_codec,
         dimensions: `${combined.media_info.width ?? "?"}×${combined.media_info.height ?? "?"}`,
-        estimatedCostUsd: totalEstimatedCost,
-        gpu: gpuNames.length === 1 ? gpuNames[0] : gpuNames.join(" + ") || null,
       });
+      await refreshBilling();
     } catch (err) {
-      setError(errorMessage(err, "Unable to create the final video."));
+      setError(errorMessage(err, "Unable to create final video."));
     } finally {
       setGeneratingScene(null);
       setCreatingFinal(false);
@@ -402,412 +466,321 @@ export default function Home() {
 
   function updateScenePrompt(sceneId: number, value: string) {
     setScenePrompts((current) => ({ ...current, [sceneId]: value }));
-    setRenderedVideos((current) => {
-      const next = { ...current };
-      delete next[sceneId];
-      return next;
-    });
-    setFinalVideo(null);
+    invalidateRenderedMedia();
   }
 
-  const finalActionLabel = allScenesRendered
-    ? finalVideo
-      ? "Recombine scenes"
-      : "Combine scenes"
-    : renderedSceneCount > 0
-      ? "Render missing & combine"
-      : "Render all & combine";
+  async function handleCheckout(packId: string) {
+    setIntegrationBusy(true);
+    setError("");
+    try {
+      const checkout = await createCheckout(packId);
+      window.location.assign(checkout.checkout_url);
+    } catch (err) {
+      setError(errorMessage(err, "Unable to open checkout."));
+      setIntegrationBusy(false);
+    }
+  }
+
+  async function handleBillingPortal() {
+    setIntegrationBusy(true);
+    setError("");
+    try {
+      const portal = await createBillingPortal();
+      window.location.assign(portal.portal_url);
+    } catch (err) {
+      setError(errorMessage(err, "Unable to open billing portal."));
+      setIntegrationBusy(false);
+    }
+  }
+
+  async function handleYouTubeConnection() {
+    setIntegrationBusy(true);
+    setError("");
+    try {
+      if (youtube?.connected) {
+        await disconnectYouTube();
+        setYoutube(await getYouTubeStatus());
+        setPublishToYouTube(false);
+        setNotice("YouTube channel disconnected.");
+      } else {
+        const connect = await connectYouTube();
+        window.location.assign(connect.authorization_url);
+      }
+    } catch (err) {
+      setError(errorMessage(err, "Unable to update YouTube connection."));
+    } finally {
+      setIntegrationBusy(false);
+    }
+  }
+
+  const finalActionLabel = creatingFinal
+    ? "Creating final master"
+    : allScenesRendered
+      ? `Combine · ${qualityLabel(quality)}`
+      : `Render all + ${qualityLabel(quality)}`;
 
   return (
     <main className="min-h-screen bg-[#070809] text-white">
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute left-1/2 top-[-430px] h-[820px] w-[820px] -translate-x-1/2 rounded-full bg-violet-400/[0.045] blur-[130px]" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,#070809_78%)]" />
-      </div>
-
-      <div className="relative mx-auto max-w-[1440px] px-5 pb-24 sm:px-8 lg:px-12">
-        <header className="flex h-20 items-center justify-between border-b border-white/[0.06]">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-sm font-bold text-black">T</div>
-            <div>
-              <div className="text-sm font-semibold tracking-tight">Triven Cinema</div>
-              <div className="text-[11px] text-zinc-600">AI video studio</div>
+      <div className="mx-auto w-full max-w-[1500px] px-4 py-5 sm:px-7 lg:px-10">
+        <header className="mb-5 flex flex-col gap-4 rounded-2xl border border-white/[0.07] bg-[#0b0c0e] px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-sm font-black text-black">T</div>
+              <div>
+                <div className="text-sm font-semibold tracking-wide text-zinc-100">Triven Cinema</div>
+                <div className="text-[11px] text-zinc-600">Prompt → story → synchronized AV → master → publish</div>
+              </div>
             </div>
           </div>
-
-          <div className="flex items-center gap-2 text-[11px]">
-            <span className="hidden rounded-full border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 text-zinc-500 sm:inline-flex">
-              LTX 2.5
-            </span>
-            <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 text-zinc-500">
-              {provider === "modal" ? "Modal production" : "ZeroGPU development"}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2 text-zinc-400">LTX 2.5 · Modal B200</span>
+            {billingCatalog?.enabled && billingMe ? (
+              <span className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] px-3 py-2 text-emerald-300">Credits {formatCredits(billingMe.balance_seconds)}</span>
+            ) : (
+              <span className="rounded-lg border border-white/[0.08] px-3 py-2 text-zinc-600">Billing {billingCatalog?.enabled ? (billingMe ? formatCredits(billingMe.balance_seconds) : "on") : "off"}</span>
+            )}
+            <span className={`rounded-lg border px-3 py-2 ${youtube?.connected ? "border-red-500/20 bg-red-500/[0.06] text-red-300" : "border-white/[0.08] text-zinc-600"}`}>
+              YouTube {youtube?.connected ? youtube.channel_title || "connected" : youtube?.enabled ? "not connected" : "off"}
             </span>
           </div>
         </header>
 
-        <section className="mx-auto max-w-4xl pb-10 pt-16 text-center sm:pt-24">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 text-xs text-zinc-400">
-            <SparklesIcon /> Prompt to finished video
-          </div>
-          <h1 className="text-balance text-4xl font-medium tracking-[-0.055em] text-zinc-50 sm:text-6xl lg:text-[68px] lg:leading-[1.02]">
-            Build cinematic video
-            <span className="block text-zinc-500">from one idea.</span>
-          </h1>
-          <p className="mx-auto mt-6 max-w-2xl text-sm leading-7 text-zinc-500 sm:text-base">
-            Generate directly from your prompt or let Triven break it into editable shots, render them with LTX, and combine the final sequence automatically.
-          </p>
-        </section>
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_330px]">
+          <section className="rounded-3xl border border-white/[0.08] bg-[#0b0c0e] p-5 sm:p-7">
+            <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-emerald-400/80">AI Video Factory</div>
+                <h1 className="mt-2 text-2xl font-semibold tracking-[-0.035em] sm:text-3xl">Create the finished video, not just a clip.</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">Long-form continuity, generated sound, 1080p/4K delivery, payment-ready credits and connected-channel publishing.</p>
+              </div>
+              <div className="inline-flex rounded-xl border border-white/[0.08] bg-[#08090a] p-1">
+                {(["factory", "storyboard", "direct"] as GenerationMode[]).map((item) => (
+                  <button key={item} type="button" onClick={() => { setMode(item); resetOutput(); }} className={`rounded-lg px-3 py-2 text-xs font-medium capitalize transition ${mode === item ? "bg-white text-black" : "text-zinc-500 hover:text-zinc-300"}`}>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <section className="mx-auto max-w-5xl">
-          <div className="mb-3 flex w-fit rounded-xl border border-white/[0.08] bg-[#0d0e10] p-1">
-            {(["storyboard", "direct"] as GenerationMode[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                disabled={isBusy}
-                onClick={() => {
-                  setMode(item);
-                  resetOutput();
-                  setError("");
-                }}
-                className={`rounded-lg px-4 py-2 text-xs font-medium transition ${
-                  mode === item ? "bg-white text-black" : "text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {item === "storyboard" ? "Storyboard mode" : "Direct prompt"}
-              </button>
-            ))}
-          </div>
+            <form onSubmit={handleSubmit}>
+              <textarea
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                rows={7}
+                placeholder="Example: A premium cinematic animated story about a young adventurer meeting a red fox in a snowy forest at sunrise. Keep the character and fox identical across the full film..."
+                className="w-full resize-none rounded-2xl border border-white/[0.09] bg-[#08090a] p-5 text-[15px] leading-7 text-zinc-200 outline-none placeholder:text-zinc-700 focus:border-white/[0.18]"
+              />
 
-          <form
-            onSubmit={handleSubmit}
-            className="overflow-hidden rounded-[26px] border border-white/[0.1] bg-[#111214] shadow-[0_32px_100px_rgba(0,0,0,0.45)]"
-          >
-            <textarea
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder={
-                mode === "storyboard"
-                  ? "Describe a story, ad, reel or cinematic sequence..."
-                  : "Write the exact shot you want LTX to generate..."
-              }
-              rows={7}
-              disabled={isBusy}
-              className="w-full resize-none bg-transparent px-7 py-7 text-[15px] leading-7 text-zinc-100 outline-none placeholder:text-zinc-600 disabled:opacity-70 sm:px-8"
-            />
-
-            <div className="border-t border-white/[0.07] bg-black/10 p-4">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                <div className="flex flex-wrap gap-2">
-                  <select
-                    value={model}
-                    disabled={isBusy}
-                    onChange={(event) => {
-                      setModel(event.target.value as VideoModelName);
-                      invalidateRenderedMedia();
-                    }}
-                    className="control"
-                  >
-                    <option value="ltx-2.5">LTX 2.5</option>
-                    <option value="wan" disabled>WAN · next</option>
-                    <option value="minimax" disabled>MiniMax · next</option>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Control label="Format">
+                  <select className="control w-full" value={aspectRatio} onChange={(e) => { setAspectRatio(e.target.value as AspectRatio); invalidateRenderedMedia(); }}>
+                    <option value="16:9">16:9 Landscape</option><option value="9:16">9:16 Vertical</option><option value="1:1">1:1 Square</option>
                   </select>
-
-                  <select
-                    value={provider}
-                    disabled={isBusy}
-                    onChange={(event) => {
-                      setProvider(event.target.value as VideoProviderName);
-                      invalidateRenderedMedia();
-                    }}
-                    className="control"
-                  >
-                    <option value="huggingface">ZeroGPU · dev</option>
-                    <option value="modal">Modal · production</option>
+                </Control>
+                <Control label="Delivery">
+                  <select className="control w-full" value={quality} onChange={(e) => { setQuality(e.target.value as RenderQuality); invalidateRenderedMedia(); }}>
+                    <option value="preview">Source preview · ≤10s</option>
+                    <option value="1080p">1080p master · ≤30s/scene</option>
+                    <option value="4k">4K master · ≤15s/scene</option>
                   </select>
-
-                  <select
-                    value={aspectRatio}
-                    disabled={isBusy}
-                    onChange={(event) => {
-                      setAspectRatio(event.target.value as AspectRatio);
-                      resetOutput();
-                    }}
-                    className="control"
-                  >
-                    <option value="16:9">16:9 Landscape</option>
-                    <option value="9:16">9:16 Portrait</option>
-                    <option value="1:1">1:1 Square</option>
+                </Control>
+                <Control label="Audio">
+                  <select className="control w-full" value={audioMode} onChange={(e) => setAudioMode(e.target.value as AudioMode)}>
+                    <option value="mastered">Generated + mastered</option><option value="native">Native LTX audio</option><option value="mute">Mute final video</option>
                   </select>
+                </Control>
+                <Control label="Continuity">
+                  <select className="control w-full" value={continuityMode} onChange={(e) => { setContinuityMode(e.target.value as ContinuityMode); invalidateRenderedMedia(); }}>
+                    <option value="strict">Strict · image + identity lock</option><option value="balanced">Balanced · identity lock</option><option value="off">Off</option>
+                  </select>
+                </Control>
+              </div>
 
-                  {mode === "storyboard" && (
-                    <select
-                      value={sceneCount}
-                      disabled={isBusy}
-                      onChange={(event) => setSceneCount(Number(event.target.value))}
-                      className="control"
-                    >
-                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((count) => (
-                        <option key={count} value={count}>{count} {count === 1 ? "Scene" : "Scenes"}</option>
-                      ))}
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {mode === "factory" ? (
+                  <>
+                    <Control label="Final runtime">
+                      <select className="control w-full" value={factoryTargetSeconds} onChange={(e) => setFactoryTargetSeconds(Number(e.target.value))}>
+                        {FACTORY_TARGETS.map((value) => <option key={value} value={value}>{value < 60 ? `${value} seconds` : `${value / 60} minute${value === 60 ? "" : "s"}`}</option>)}
+                      </select>
+                    </Control>
+                    <Control label="Scene runtime">
+                      <select className="control w-full" value={factorySceneSeconds} onChange={(e) => setFactorySceneSeconds(Number(e.target.value))}>
+                        {durationOptions.map((value) => <option key={value} value={value}>{value}s / scene</option>)}
+                      </select>
+                    </Control>
+                  </>
+                ) : mode === "storyboard" ? (
+                  <>
+                    <Control label="Scenes">
+                      <select className="control w-full" value={sceneCount} onChange={(e) => setSceneCount(Number(e.target.value))}>
+                        {[2, 3, 4, 6, 8, 10, 12, 16, 20].map((value) => <option key={value} value={value}>{value} scenes</option>)}
+                      </select>
+                    </Control>
+                    <Control label="Runtime / scene">
+                      <select className="control w-full" value={durationSeconds} onChange={(e) => { setDurationSeconds(Number(e.target.value)); invalidateRenderedMedia(); }}>
+                        {durationOptions.map((value) => <option key={value} value={value}>{value}s</option>)}
+                      </select>
+                    </Control>
+                  </>
+                ) : (
+                  <Control label="Clip runtime">
+                    <select className="control w-full" value={durationSeconds} onChange={(e) => setDurationSeconds(Number(e.target.value))}>
+                      {durationOptions.map((value) => <option key={value} value={value}>{value}s</option>)}
                     </select>
+                  </Control>
+                )}
+                <Control label="Seed">
+                  <input className="control w-full" type="number" min={0} value={seed} onChange={(e) => setSeed(Number(e.target.value) || 0)} />
+                </Control>
+                <Control label="Decoder">
+                  <select className="control w-full" value={decoder} onChange={(e) => setDecoder(e.target.value as DecoderName)}>
+                    <option value="conv">Conv · fast</option><option value="diffusion">Diffusion · quality</option>
+                  </select>
+                </Control>
+              </div>
+
+              <div className="mt-3 rounded-2xl border border-white/[0.07] bg-white/[0.015] p-4">
+                <label className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-600">Audio direction</label>
+                <textarea value={audioDirection} onChange={(e) => setAudioDirection(e.target.value)} rows={2} className="mt-2 w-full resize-none bg-transparent text-sm leading-6 text-zinc-400 outline-none placeholder:text-zinc-700" placeholder="Forest ambience, footsteps in snow, subtle wind, no dialogue..." />
+              </div>
+
+              {mode === "factory" && youtube?.enabled && (
+                <div className="mt-3 rounded-2xl border border-white/[0.07] bg-white/[0.015] p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-xs font-medium text-zinc-300">Publish after final render</div>
+                      <div className="mt-1 text-[11px] text-zinc-600">Upload the finished master to the connected YouTube channel. Private is the safe default.</div>
+                    </div>
+                    <button type="button" disabled={!youtube.connected} onClick={() => setPublishToYouTube((value) => !value)} className={`relative h-6 w-11 rounded-full transition ${publishToYouTube ? "bg-emerald-500" : "bg-zinc-800"} disabled:opacity-30`}>
+                      <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${publishToYouTube ? "left-6" : "left-1"}`} />
+                    </button>
+                  </div>
+                  {publishToYouTube && (
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <input className="control w-full" value={youtubeTitle} onChange={(e) => setYoutubeTitle(e.target.value)} placeholder="YouTube title (optional)" />
+                      <select className="control w-full" value={youtubePrivacy} onChange={(e) => setYoutubePrivacy(e.target.value as YouTubePrivacy)}>
+                        <option value="private">Private</option><option value="unlisted" disabled={!youtube.public_uploads_allowed}>Unlisted</option><option value="public" disabled={!youtube.public_uploads_allowed}>Public</option>
+                      </select>
+                      <textarea className="sm:col-span-2 w-full resize-none rounded-xl border border-white/[0.08] bg-[#090a0b] p-3 text-xs leading-5 text-zinc-400 outline-none" rows={3} value={youtubeDescription} onChange={(e) => setYoutubeDescription(e.target.value)} placeholder="Description" />
+                    </div>
                   )}
-
-                  {mode === "storyboard" && (
-                    <select
-                      value={continuityMode}
-                      disabled={isBusy}
-                      onChange={(event) => {
-                        setContinuityMode(event.target.value as ContinuityMode);
-                        invalidateRenderedMedia();
-                      }}
-                      className="control"
-                    >
-                      <option value="strict">Strict continuity</option>
-                      <option value="balanced">Balanced continuity</option>
-                      <option value="off">Continuity off</option>
-                    </select>
-                  )}
-
-                  <select
-                    value={durationSeconds}
-                    disabled={isBusy}
-                    onChange={(event) => {
-                      setDurationSeconds(Number(event.target.value));
-                      invalidateRenderedMedia();
-                    }}
-                    className="control"
-                  >
-                    {[1, 2, 3, 5].map((seconds) => (
-                      <option key={seconds} value={seconds}>{seconds}s / scene</option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={quality}
-                    disabled={isBusy}
-                    onChange={(event) => {
-                      setQuality(event.target.value as RenderQuality);
-                      setFinalVideo(null);
-                    }}
-                    className="control"
-                  >
-                    <option value="preview">Source preview</option>
-                    <option value="1080p">1080p delivery</option>
-                  </select>
-
-                  <select
-                    value={decoder}
-                    disabled={isBusy}
-                    onChange={(event) => {
-                      setDecoder(event.target.value as DecoderName);
-                      invalidateRenderedMedia();
-                    }}
-                    className="control"
-                  >
-                    <option value="conv">Conv decoder</option>
-                    <option value="diffusion">Diffusion decoder</option>
-                  </select>
-
-                  <label className="control flex items-center gap-2">
-                    <span className="text-zinc-600">Seed</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={2147483647}
-                      value={seed}
-                      disabled={isBusy}
-                      onChange={(event) => {
-                        setSeed(Math.max(0, Number(event.target.value) || 0));
-                        invalidateRenderedMedia();
-                      }}
-                      className="w-20 bg-transparent text-zinc-300 outline-none"
-                    />
-                  </label>
-
-                  <label className="control flex cursor-pointer items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={enhancePrompt}
-                      disabled={isBusy || mode === "storyboard"}
-                      onChange={(event) => {
-                        setEnhancePrompt(event.target.checked);
-                        invalidateRenderedMedia();
-                      }}
-                    />
-                    Enhance direct prompt
-                  </label>
                 </div>
+              )}
 
-                <button
-                  type="submit"
-                  disabled={isBusy || !prompt.trim()}
-                  className="flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-6 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {planning || directGenerating ? <Spinner /> : <SparklesIcon />}
-                  {mode === "storyboard"
-                    ? planning ? "Planning..." : "Create storyboard"
-                    : directGenerating ? "Generating..." : "Generate video"}
+              <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-zinc-600">
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={enhancePrompt} onChange={(e) => setEnhancePrompt(e.target.checked)} /> AI prompt enhancement</label>
+                  <span>{capabilities ? `Native chunk ${capabilities.native_chunk_seconds}s` : "Long clips chain native LTX segments"}</span>
+                  <span>{quality === "4k" ? "4K is a delivery master, not a native-source claim" : "Synchronized LTX audio preserved"}</span>
+                </div>
+                <button type="submit" disabled={isBusy} className="flex h-12 min-w-[190px] items-center justify-center gap-2 rounded-xl bg-white px-6 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40">
+                  {isBusy ? <Spinner /> : <PlayIcon />}
+                  {factoryGenerating ? "Running factory" : directGenerating ? "Rendering" : planning ? "Planning" : mode === "factory" ? "Create finished video" : mode === "direct" ? "Generate clip" : "Create storyboard"}
                 </button>
               </div>
+            </form>
 
-              <div className="mt-3 text-[11px] text-zinc-600">
-                {mode === "storyboard" && continuityMode === "strict"
-                  ? "Strict continuity keeps one seed + one character/style bible and conditions every scene after Scene 1 on the previous scene's final frame."
-                  : quality === "1080p"
-                    ? "Storyboard scenes stay at source quality and the final sequence is upscaled once to 1080-class delivery dimensions."
-                    : "Source preview avoids unnecessary upscaling while you test prompts and scene composition."}
-              </div>
-            </div>
-          </form>
+            {progressMessage && <div className="mt-4 rounded-xl border border-blue-500/10 bg-blue-500/[0.04] px-4 py-3 text-xs text-blue-300">{progressMessage}</div>}
+            {error && <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/[0.05] px-4 py-3 text-sm text-red-300">{error}</div>}
+            {notice && <div className="mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] px-4 py-3 text-sm text-emerald-300">{notice}</div>}
+          </section>
 
-          {(progressMessage || error) && (
-            <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
-              error
-                ? "border-red-500/15 bg-red-500/[0.06] text-red-300"
-                : "border-white/[0.08] bg-white/[0.025] text-zinc-400"
-            }`}>
-              <div className="flex items-center gap-3">
-                {!error && <Spinner />}
-                <span>{error || progressMessage}</span>
-              </div>
-            </div>
-          )}
-        </section>
+          <aside className="space-y-4">
+            <IntegrationCard title="Production profile" subtitle="Current factory limits">
+              <InfoRow label="1080p scene" value={`${capabilities?.max_scene_duration_seconds_by_quality?.["1080p"] ?? 30}s`} />
+              <InfoRow label="4K scene" value={`${capabilities?.max_scene_duration_seconds_by_quality?.["4k"] ?? 15}s`} />
+              <InfoRow label="Factory runtime" value={`${capabilities?.max_factory_duration_seconds ?? 300}s`} />
+              <InfoRow label="Audio" value="Native / mastered / mute" />
+              <InfoRow label="Continuity" value="Identity + previous frame" />
+            </IntegrationCard>
 
-        {finalVideo && mode === "direct" && (
-          <section className="mx-auto mt-12 max-w-5xl">
+            <IntegrationCard title="Customer billing" subtitle={billingCatalog?.enabled ? "Stripe Checkout credits" : "Feature-gated until Stripe is configured"}>
+              {billingCatalog?.enabled && billingMe ? (
+                <>
+                  <div className="mb-3 rounded-xl bg-emerald-500/[0.06] px-3 py-3 text-sm text-emerald-300">Balance · {formatCredits(billingMe.balance_seconds)}</div>
+                  <div className="space-y-2">
+                    {billingCatalog.packs.filter((pack) => pack.available).map((pack) => (
+                      <button key={pack.id} type="button" disabled={integrationBusy} onClick={() => handleCheckout(pack.id)} className="flex w-full items-center justify-between rounded-lg border border-white/[0.08] px-3 py-2 text-left text-xs text-zinc-400 transition hover:bg-white/[0.03]">
+                        <span>{pack.label}</span><span>Buy</span>
+                      </button>
+                    ))}
+                    {billingMe.stripe_customer_id && <button type="button" onClick={handleBillingPortal} className="w-full rounded-lg px-3 py-2 text-xs text-zinc-600 hover:text-zinc-300">Manage billing</button>}
+                  </div>
+                </>
+              ) : <p className="text-xs leading-5 text-zinc-600">Configure Stripe keys and Price IDs, then enable billing. The render queue can enforce generation-second credits.</p>}
+            </IntegrationCard>
+
+            <IntegrationCard title="YouTube channel" subtitle={youtube?.enabled ? "Server-side OAuth + resumable upload" : "Feature-gated until Google OAuth is configured"}>
+              {youtube?.enabled ? (
+                <>
+                  <div className="mb-3 text-xs text-zinc-500">{youtube.connected ? `Connected to ${youtube.channel_title || youtube.channel_id || "channel"}` : "No channel connected"}</div>
+                  <button type="button" disabled={integrationBusy} onClick={handleYouTubeConnection} className="w-full rounded-xl border border-white/[0.09] bg-white/[0.03] px-4 py-2.5 text-xs font-medium text-zinc-300 hover:bg-white/[0.06] disabled:opacity-40">
+                    {youtube.connected ? "Disconnect channel" : "Connect YouTube"}
+                  </button>
+                </>
+              ) : <p className="text-xs leading-5 text-zinc-600">Once enabled, a customer connects their own channel and Factory mode can upload the completed master automatically.</p>}
+            </IntegrationCard>
+          </aside>
+        </div>
+
+        {finalVideo && (
+          <section className="mt-5">
             <FinalVideoCard video={finalVideo} aspectRatio={aspectRatio} />
           </section>
         )}
 
+        {factoryResult && (
+          <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Stat label="Scenes" value={String(factoryResult.scene_count)} detail={`${factoryResult.chunk_count} native LTX chunks`} />
+            <Stat label="Runtime" value={`${(factoryResult.actual_duration_seconds ?? factoryResult.target_duration_seconds).toFixed(1)}s`} detail={`${factoryResult.scene_duration_seconds}s target scene`} />
+            <Stat label="Delivery" value={qualityLabel(factoryResult.quality)} detail={`${factoryResult.width ?? "?"}×${factoryResult.height ?? "?"} · ${factoryResult.audio_mode}`} />
+            <Stat label="Planner" value={factoryResult.planner_source} detail={factoryResult.youtube_url ? "Published to YouTube" : "Master ready"} />
+          </section>
+        )}
+
         {result && mode === "storyboard" && (
-          <section className="mx-auto mt-16 max-w-7xl">
-            <div className="mb-7 flex flex-col gap-5 border-b border-white/[0.07] pb-7 md:flex-row md:items-end md:justify-between">
+          <section className="mt-5 rounded-3xl border border-white/[0.08] bg-[#0b0c0e] p-5 sm:p-7">
+            <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.22em] text-zinc-600">Storyboard</div>
-                <h2 className="text-2xl font-medium tracking-[-0.025em] text-zinc-100">Review the shots before the final render</h2>
-                <p className="mt-2 text-sm text-zinc-600">
-                  {result.scenes.length} scenes · {result.aspect_ratio} · {plannedDuration}s AI plan · {durationSeconds}s render per scene
-                </p>
-                {result.plan_quality && (
-                  <p className="mt-2 text-[11px] text-zinc-700" title={result.plan_quality.note}>
-                    Storyboard prompt coverage: {Math.round(result.plan_quality.coverage_score * 100)}%
-                    {result.plan_quality.missing_terms.length > 0
-                      ? ` · review: ${result.plan_quality.missing_terms.slice(0, 5).join(", ")}`
-                      : " · key prompt terms preserved"}
-                  </p>
-                )}
-                <p className="mt-2 text-[11px] text-zinc-700">
-                  Planner: {result.planner_source === "gemini" ? "Gemini" : result.planner_source === "direct" ? "Local fast path" : "Local fallback"}
-                  {result.planner_note ? ` · ${result.planner_note}` : ""}
-                </p>
-                <p className="mt-1 text-[11px] text-emerald-500/70" title={`${result.character_bible}
-
-${result.style_bible}`}>
-                  Identity lock: {continuityMode === "strict" ? "Strict · previous-frame conditioned" : continuityMode === "balanced" ? "Balanced · shared identity + seed" : "Off"}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg font-semibold">Storyboard</h2>
+                  <span className="rounded-full bg-white/[0.05] px-2.5 py-1 text-[10px] text-zinc-500">{result.planner_source}</span>
+                  <span className="rounded-full bg-emerald-500/[0.06] px-2.5 py-1 text-[10px] text-emerald-400">{continuityMode} continuity</span>
+                </div>
+                <p className="mt-1 text-xs text-zinc-600">{result.scenes.length} scenes · {plannedDuration}s selected runtime · same seed · previous-frame chaining</p>
               </div>
-
-              <button
-                type="button"
-                onClick={handleRenderMissingAndCombine}
-                disabled={isBusy}
-                className="flex h-11 items-center justify-center gap-2 rounded-xl bg-white px-5 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {creatingFinal ? <Spinner /> : <PlayIcon />}
-                {creatingFinal ? (progressMessage || "Creating final video") : finalActionLabel}
+              <button type="button" onClick={handleRenderMissingAndCombine} disabled={isBusy} className="flex h-11 items-center justify-center gap-2 rounded-xl bg-white px-5 text-sm font-medium text-black hover:bg-zinc-200 disabled:opacity-40">
+                {creatingFinal ? <Spinner /> : <PlayIcon />}{creatingFinal ? progressMessage || "Creating final video" : finalActionLabel}
               </button>
             </div>
-
-            {finalVideo && (
-              <div className="mb-8">
-                <FinalVideoCard video={finalVideo} aspectRatio={result.aspect_ratio} />
-              </div>
-            )}
 
             <div className="grid gap-5 lg:grid-cols-2">
               {result.scenes.map((scene, index) => {
                 const video = renderedVideos[scene.id];
                 const isGenerating = generatingScene === scene.id;
                 const isEditing = editingScene === scene.id;
-
                 return (
                   <article key={scene.id} className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0d0e10]">
                     {video ? (
-                      <div className="bg-black">
-                        <video src={video.url} controls playsInline className={`w-full object-contain ${aspectClass(result.aspect_ratio)}`} />
-                      </div>
+                      <div className="bg-black"><video src={video.url} controls playsInline className={`w-full object-contain ${aspectClass(result.aspect_ratio)}`} /></div>
                     ) : (
-                      <div className={`relative flex items-center justify-center bg-[#111214] ${aspectClass(result.aspect_ratio)}`}>
-                        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)]" />
-                        <div className="relative text-center text-zinc-600">
-                          {isGenerating ? <Spinner /> : <PlayIcon />}
-                          <div className="mt-3 text-xs">{isGenerating ? "Rendering with LTX..." : "Preview not rendered"}</div>
-                        </div>
-                      </div>
+                      <div className={`relative flex items-center justify-center bg-[#111214] ${aspectClass(result.aspect_ratio)}`}><div className="text-center text-zinc-600">{isGenerating ? <Spinner /> : <PlayIcon />}<div className="mt-3 text-xs">{isGenerating ? "Rendering with LTX..." : "Not rendered"}</div></div></div>
                     )}
-
                     <div className="p-5 sm:p-6">
                       <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.2em] text-zinc-600">Scene {String(index + 1).padStart(2, "0")}</div>
-                          <h3 className="truncate text-base font-medium text-zinc-200">{scene.title}</h3>
-                        </div>
-                        <div className="shrink-0 rounded-lg border border-white/[0.07] bg-white/[0.025] px-2.5 py-1 text-[10px] text-zinc-600">
-                          {scene.duration_seconds}s AI plan
-                        </div>
+                        <div className="min-w-0"><div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-zinc-600">Scene {String(index + 1).padStart(2, "0")}</div><h3 className="truncate text-base font-medium text-zinc-200">{scene.title}</h3></div>
+                        <div className="shrink-0 rounded-lg border border-white/[0.07] px-2.5 py-1 text-[10px] text-zinc-600">{durationSeconds}s render</div>
                       </div>
-
                       {isEditing ? (
-                        <textarea
-                          value={scenePrompts[scene.id] || ""}
-                          onChange={(event) => updateScenePrompt(scene.id, event.target.value)}
-                          rows={8}
-                          className="mt-5 w-full resize-none rounded-xl border border-white/[0.08] bg-[#090a0b] p-4 text-sm leading-6 text-zinc-300 outline-none focus:border-white/[0.18]"
-                        />
-                      ) : (
-                        <p className="mt-5 line-clamp-6 text-sm leading-6 text-zinc-500">{scenePrompts[scene.id]}</p>
-                      )}
-
-                      {video && (
-                        <div className="mt-4 rounded-xl bg-white/[0.025] px-3 py-2 text-[11px] leading-5 text-zinc-600">
-                          {video.details} · {video.renderSeconds.toFixed(1)}s render · {video.wallSeconds.toFixed(1)}s wall · {video.provider}
-                          {video.gpu ? ` · ${video.gpu}` : ""}
-                          {video.mediaInfo.has_audio ? ` · audio ${video.mediaInfo.audio_codec || "present"}` : " · no audio stream"}
-                          {video.continuityMode === "strict" ? (video.continuityApplied ? " · continuity conditioned" : " · continuity anchor") : ""}
-                          {video.estimatedCostUsd != null ? ` · est. $${video.estimatedCostUsd.toFixed(4)}` : ""}
-                        </div>
-                      )}
-
+                        <textarea value={scenePrompts[scene.id] || ""} onChange={(e) => updateScenePrompt(scene.id, e.target.value)} rows={8} className="mt-5 w-full resize-none rounded-xl border border-white/[0.08] bg-[#090a0b] p-4 text-sm leading-6 text-zinc-300 outline-none" />
+                      ) : <p className="mt-5 line-clamp-6 text-sm leading-6 text-zinc-500">{scenePrompts[scene.id]}</p>}
+                      {video && <div className="mt-4 rounded-xl bg-white/[0.025] px-3 py-2 text-[11px] leading-5 text-zinc-600">{video.details} · {video.chunkCount} chunk{video.chunkCount === 1 ? "" : "s"} · {video.renderSeconds.toFixed(1)}s render · {video.mediaInfo.has_audio ? `audio ${video.mediaInfo.audio_codec || "present"}` : "no audio"}{video.continuityMode === "strict" ? video.continuityApplied ? " · conditioned" : " · anchor" : ""}</div>}
                       <div className="mt-5 flex items-center justify-between gap-3 border-t border-white/[0.06] pt-4">
-                        <button
-                          type="button"
-                          disabled={isBusy && !isEditing}
-                          onClick={() => setEditingScene(isEditing ? null : scene.id)}
-                          className="h-9 rounded-lg px-3 text-xs font-medium text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-300 disabled:opacity-40"
-                        >
-                          {isEditing ? "Done editing" : "Edit prompt"}
-                        </button>
-
+                        <button type="button" disabled={isBusy && !isEditing} onClick={() => setEditingScene(isEditing ? null : scene.id)} className="h-9 rounded-lg px-3 text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40">{isEditing ? "Done editing" : "Edit prompt"}</button>
                         <div className="flex items-center gap-2">
-                          {video && (
-                            <a
-                              href={video.downloadUrl}
-                              className="flex h-9 items-center gap-2 rounded-lg border border-white/[0.08] px-3 text-xs text-zinc-500 transition hover:text-zinc-300"
-                            >
-                              <DownloadIcon /> Clip
-                            </a>
-                          )}
-                          <button
-                            type="button"
-                            disabled={isBusy}
-                            onClick={() => handleRenderScene(scene.id)}
-                            className="flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-xs font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            {isGenerating ? <Spinner /> : <PlayIcon />}
-                            {video ? "Regenerate" : "Render preview"}
-                          </button>
+                          {video && <a href={video.downloadUrl} className="flex h-9 items-center gap-2 rounded-lg border border-white/[0.08] px-3 text-xs text-zinc-500 hover:text-zinc-300"><DownloadIcon /> Clip</a>}
+                          <button type="button" disabled={isBusy} onClick={() => handleRenderScene(scene.id)} className="flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-xs font-medium text-black hover:bg-zinc-200 disabled:opacity-40">{isGenerating ? <Spinner /> : <PlayIcon />}{video ? "Regenerate chain" : "Render through scene"}</button>
                         </div>
                       </div>
                     </div>
@@ -815,11 +788,7 @@ ${result.style_bible}`}>
                 );
               })}
             </div>
-
-            <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.015] px-5 py-4 text-xs text-zinc-600 sm:flex-row sm:items-center sm:justify-between">
-              <div>{renderedSceneCount}/{result.scenes.length} scene previews rendered</div>
-              <div>{allScenesRendered ? "Ready to combine without another GPU render" : "Missing scenes are rendered only when needed"}</div>
-            </div>
+            <div className="mt-5 text-xs text-zinc-600">{renderedSceneCount}/{result.scenes.length} rendered · {allScenesRendered ? "Ready to combine" : "Scenes render sequentially so strict continuity has the previous frame"}</div>
           </section>
         )}
       </div>
@@ -827,43 +796,38 @@ ${result.style_bible}`}>
   );
 }
 
-function FinalVideoCard({
-  video,
-  aspectRatio,
-}: {
-  video: NonNullable<FinalVideo>;
-  aspectRatio: AspectRatio;
-}) {
+function Control({ label, children }: { label: string; children: ReactNode }) {
+  return <label className="block"><span className="mb-1.5 block text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-600">{label}</span>{children}</label>;
+}
+
+function IntegrationCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  return <div className="rounded-2xl border border-white/[0.07] bg-[#0b0c0e] p-4"><div className="text-xs font-semibold text-zinc-300">{title}</div><div className="mt-1 mb-4 text-[11px] leading-5 text-zinc-600">{subtitle}</div>{children}</div>;
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return <div className="flex items-center justify-between border-t border-white/[0.05] py-2 text-[11px]"><span className="text-zinc-600">{label}</span><span className="text-zinc-400">{value}</span></div>;
+}
+
+function Stat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="rounded-2xl border border-white/[0.07] bg-[#0b0c0e] p-4"><div className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">{label}</div><div className="mt-2 text-lg font-semibold text-zinc-200">{value}</div><div className="mt-1 text-[11px] text-zinc-600">{detail}</div></div>;
+}
+
+function FinalVideoCard({ video, aspectRatio }: { video: NonNullable<FinalVideo>; aspectRatio: AspectRatio }) {
   return (
     <div className="overflow-hidden rounded-3xl border border-white/[0.1] bg-[#101113]">
       <div className="flex flex-col gap-3 border-b border-white/[0.07] px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div>
-          <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-            Final render
-            <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-medium text-emerald-400">Ready</span>
-          </div>
+          <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">Final master <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] text-emerald-400">Ready</span></div>
           <div className="mt-1 text-xs text-zinc-600">{video.label}</div>
-          <div className="mt-1 text-[11px] text-zinc-700">
-            {video.dimensions} · {video.hasAudio ? `audio ${video.audioCodec || "present"}` : "no audio stream"}
-            {video.gpu ? ` · ${video.gpu}` : ""}
-            {video.estimatedCostUsd != null ? ` · est. $${video.estimatedCostUsd.toFixed(4)}` : ""}
-          </div>
+          <div className="mt-1 text-[11px] text-zinc-700">{video.dimensions} · {video.hasAudio ? `audio ${video.audioCodec || "present"}` : "no audio stream"}{video.gpu ? ` · ${video.gpu}` : ""}{video.estimatedCostUsd != null ? ` · est. $${video.estimatedCostUsd.toFixed(4)}` : ""}</div>
         </div>
-        <a
-          href={video.downloadUrl}
-          className="flex h-10 items-center justify-center gap-2 rounded-xl bg-white px-4 text-xs font-medium text-black transition hover:bg-zinc-200"
-        >
-          <DownloadIcon /> Download MP4
-        </a>
+        <div className="flex flex-wrap gap-2">
+          {video.youtubeUrl && <a href={video.youtubeUrl} target="_blank" rel="noreferrer" className="flex h-10 items-center justify-center rounded-xl border border-red-500/20 bg-red-500/[0.06] px-4 text-xs font-medium text-red-300">Open YouTube · {video.youtubePrivacy}</a>}
+          <a href={video.downloadUrl} className="flex h-10 items-center justify-center gap-2 rounded-xl bg-white px-4 text-xs font-medium text-black hover:bg-zinc-200"><DownloadIcon /> Download MP4</a>
+        </div>
       </div>
-
-      <div className={`mx-auto bg-black ${aspectRatio === "9:16" ? "max-w-[430px]" : aspectRatio === "1:1" ? "max-w-[760px]" : "w-full"}`}>
-        <video src={video.url} controls playsInline className={`w-full object-contain ${aspectClass(aspectRatio)}`} />
-      </div>
-
-      <div className="border-t border-white/[0.07] px-5 py-4 text-[11px] leading-5 text-zinc-600 sm:px-6">
-        {video.qualityNote}
-      </div>
+      <div className={`mx-auto bg-black ${aspectRatio === "9:16" ? "max-w-[430px]" : aspectRatio === "1:1" ? "max-w-[760px]" : "w-full"}`}><video src={video.url} controls playsInline className={`w-full object-contain ${aspectClass(aspectRatio)}`} /></div>
+      <div className="border-t border-white/[0.07] px-5 py-4 text-[11px] leading-5 text-zinc-600 sm:px-6">{video.qualityNote}</div>
     </div>
   );
 }

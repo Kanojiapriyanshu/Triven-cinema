@@ -4,13 +4,25 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from app.api.routes import generations, health
+from app.api.routes import billing, factory, generations, health, youtube
 from app.core.config import settings
-from app.services.job_service import initialize_job_store, shutdown_job_executor
+from app.services.billing_service import initialize_billing_store
+from app.services.identity_service import (
+    WORKSPACE_HEADER,
+    ensure_workspace,
+    workspace_id_from_request,
+)
+from app.services.job_service import (
+    initialize_job_store,
+    shutdown_job_executor,
+    workspace_owns_generated_file,
+)
+from app.services.storage_service import resolve_generated_asset
+from app.services.youtube_service import initialize_youtube_store
 
 
 LOGGER = logging.getLogger("triven.api")
@@ -26,6 +38,8 @@ for directory in (STORAGE_DIR, GENERATED_DIR, LOGS_DIR):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_job_store()
+    initialize_billing_store()
+    initialize_youtube_store()
     LOGGER.info(
         "Triven Cinema API starting env=%s provider=%s",
         settings.app_env,
@@ -53,9 +67,10 @@ if settings.cors_origin_list:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Request-ID"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-Request-ID", WORKSPACE_HEADER],
+        expose_headers=[WORKSPACE_HEADER],
     )
 
 
@@ -94,16 +109,42 @@ async def request_context(request: Request, call_next):
     return response
 
 
-# SECURITY: expose only generated media. Mounting the whole storage directory
-# would make the SQLite jobs database and metrics JSONL publicly downloadable.
-app.mount(
-    "/media/generated",
-    StaticFiles(directory=str(GENERATED_DIR)),
-    name="generated-media",
-)
+@app.post("/api/v1/identity/bootstrap")
+def bootstrap_workspace(request: Request, response: Response) -> dict:
+    """Establish one workspace identity before parallel UI bootstrap calls.
+
+    The endpoint prevents several first-load billing/YouTube requests from each
+    minting a different workspace concurrently. Production keeps the signed token
+    HttpOnly; development may also receive a signed response header for split-origin
+    localhost testing.
+    """
+    workspace_id = ensure_workspace(request, response)
+    return {"status": "ready", "workspace_id": workspace_id}
+
+
+# SECURITY: generated media is served through an ownership check rather than a
+# raw StaticFiles mount. In production, knowing a random filename is not enough;
+# the signed workspace cookie must own a completed job that references the asset.
+@app.get("/media/generated/{filename}")
+async def generated_media(filename: str, request: Request):
+    try:
+        path = resolve_generated_asset(filename, extensions={".mp4", ".png", ".jpg", ".jpeg", ".webp"})
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Generated media not found.") from exc
+
+    if settings.is_production:
+        workspace_id = workspace_id_from_request(request)
+        if not workspace_id or not workspace_owns_generated_file(workspace_id, path.name):
+            raise HTTPException(status_code=404, detail="Generated media not found.")
+
+    media_type = "video/mp4" if path.suffix.lower() == ".mp4" else None
+    return FileResponse(path, media_type=media_type, filename=None)
 
 app.include_router(health.router, prefix="/api/v1/health", tags=["Health"])
 app.include_router(generations.router, prefix="/api/v1/generations", tags=["Generations"])
+app.include_router(factory.router, prefix="/api/v1/factory", tags=["Factory"])
+app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
+app.include_router(youtube.router, prefix="/api/v1/youtube", tags=["YouTube"])
 
 
 @app.get("/")

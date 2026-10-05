@@ -1,3 +1,4 @@
+import math
 import subprocess
 from pathlib import Path
 
@@ -21,6 +22,33 @@ def frames_for_duration(duration_seconds: float, fps: int = 24) -> int:
     return blocks * 8 + 1
 
 
+
+
+# LTX-2.5 Distilled supports native temporal windowing for long video.
+# 241 pixel frames ~= 10 seconds at 24fps and stays on the required 8k+1 grid.
+# A 25-frame carry overlaps adjacent windows so visual motion and the jointly
+# generated audio remain continuous instead of hard-cutting every 10s. Current
+# upstream LTX-2 exposes --chunk-pixel-frames and --chunk-carry-frames.
+LONG_VIDEO_PIXEL_FRAMES = 241
+LONG_VIDEO_CARRY_FRAMES = 25
+
+
+def temporal_chunk_count(
+    duration_seconds: float,
+    *,
+    fps: int = 24,
+    pixel_frames: int = LONG_VIDEO_PIXEL_FRAMES,
+    carry_frames: int = LONG_VIDEO_CARRY_FRAMES,
+) -> int:
+    total_frames = frames_for_duration(duration_seconds, fps=fps)
+    if total_frames <= pixel_frames:
+        return 1
+    stride = pixel_frames - carry_frames
+    if stride <= 0:
+        raise ValueError("Temporal chunk carry must be smaller than the chunk window.")
+    return 1 + math.ceil((total_frames - pixel_frames) / stride)
+
+
 def build_command(
     *,
     prompt: str,
@@ -38,6 +66,8 @@ def build_command(
         if decoder == "diffusion"
         else VIDEO_VAE_CONV
     )
+
+    num_frames = frames_for_duration(duration_seconds)
 
     command = [
         "uv",
@@ -60,7 +90,7 @@ def build_command(
         "--height",
         str(height),
         "--num-frames",
-        str(frames_for_duration(duration_seconds)),
+        str(num_frames),
         "--seed",
         str(seed),
         "--quantization",
@@ -70,6 +100,19 @@ def build_command(
         "--prompt",
         prompt,
     ]
+
+    # For >10s clips use LTX's own temporal windowing inside one inference
+    # invocation. This keeps the multimodal latent/audio context in one pipeline
+    # run and lets LTX blend the overlap between windows.
+    if num_frames > LONG_VIDEO_PIXEL_FRAMES:
+        command.extend(
+            [
+                "--chunk-pixel-frames",
+                str(LONG_VIDEO_PIXEL_FRAMES),
+                "--chunk-carry-frames",
+                str(LONG_VIDEO_CARRY_FRAMES),
+            ]
+        )
 
     # LTX-2 image conditioning syntax is:
     #   --image PATH FRAME_IDX STRENGTH [CRF]

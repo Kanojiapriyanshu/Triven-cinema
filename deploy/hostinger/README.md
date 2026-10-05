@@ -1,82 +1,83 @@
 # Triven Cinema on Hostinger VPS
 
-This is the production deployment for the current single-server application architecture.
+The current production target is one Hostinger Linux VPS for the web/API/orchestration layer and Modal for LTX-2.5 GPU inference.
 
 ```text
 Internet
   |
   v
-Caddy :80/:443
-  |--------------------|
-  v                    v
-Next.js :3000       FastAPI :8000
-                        |
-                        +-- SQLite jobs / generated media on VPS storage
-                        +-- Gemini storyboard planner or local fallback
-                        +-- Modal API -> LTX 2.5 GPU rendering
+Host Nginx :80/:443
+  |-------------------------------|
+  v                               v
+127.0.0.1:3333                127.0.0.1:3334
+Next.js                         FastAPI
+                                   |
+                                   +-- persistent jobs/billing/integration SQLite state
+                                   +-- generated media on VPS storage
+                                   +-- Gemini planner / local fallback
+                                   +-- Modal API -> B200 -> LTX-2.5
 ```
 
-FastAPI and Next.js are private Docker services. Only Caddy publishes ports to the public internet. Heavy LTX inference stays on Modal; the VPS does not need a GPU and should not store the LTX model weights.
+The Docker services never bind FastAPI/Next.js to a public interface. This VPS already uses host Nginx for other Triven domains, so the production Compose file intentionally contains **no Caddy service**.
 
-## 1. Prepare the VPS
+## 1. Requirements
 
-Use a supported Ubuntu LTS image on Hostinger VPS.
+Ubuntu LTS, Docker Engine, Docker Compose v2, Nginx and Certbot:
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y ca-certificates curl git ufw
-curl -fsSL https://get.docker.com | sudo sh
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"
+sudo apt update
+sudo apt install -y ca-certificates curl git ufw nginx certbot python3-certbot-nginx
 ```
 
-Log out and back in after adding the Docker group, then verify:
+Verify:
 
 ```bash
 docker --version
 docker compose version
+nginx -v
 ```
 
 ## 2. Firewall
-
-Keep SSH available before enabling UFW:
 
 ```bash
 sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw allow 443/udp
 sudo ufw enable
 sudo ufw status
 ```
 
-If Hostinger's control panel firewall is enabled, allow the same public ports there. Do not expose 3000 or 8000.
+Do not expose 3000, 8000, 3333 or 3334 publicly. `3333` and `3334` are loopback-only debug/upstream ports.
 
-## 3. DNS
+## 3. DNS and HTTPS
 
-For the current demo, deployment is pinned to `devansh.info`. Create this A record:
+The demo is pinned to:
 
 ```text
-devansh.info -> YOUR_VPS_PUBLIC_IPV4
+devansh.info
 ```
 
-If you publish an AAAA record, it must point to the same VPS over working IPv6. Remove stale AAAA records instead of leaving them pointed elsewhere.
+Point its A record to the VPS public IPv4. Remove stale AAAA records unless IPv6 is correctly configured.
 
-Caddy requests and renews HTTPS certificates automatically after DNS points to the VPS and ports 80/443 are reachable.
-
-## 4. Place the project on the VPS
-
-Use a stable path instead of a home-directory Downloads/Desktop folder:
+Install the Nginx site:
 
 ```bash
-sudo mkdir -p /opt/triven-cinema
-sudo chown -R "$USER":"$USER" /opt/triven-cinema
-cd /opt/triven-cinema
+sudo cp deploy/hostinger/nginx.triven-cinema.conf /etc/nginx/sites-available/triven-cinema
+sudo ln -sf /etc/nginx/sites-available/triven-cinema /etc/nginx/sites-enabled/triven-cinema
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-Clone or upload the repository there.
+Verify HTTP routing, then issue/attach the certificate:
 
-## 5. Configure production secrets
+```bash
+curl -I http://devansh.info
+sudo certbot --nginx -d devansh.info
+```
+
+Existing `cinema.triven.ai` / `dial.triven.ai` Nginx sites can stay enabled because they use different `server_name` values.
+
+## 4. Configure `.env`
 
 ```bash
 cp .env.production.example .env
@@ -84,46 +85,43 @@ chmod 600 .env
 nano .env
 ```
 
-Set at minimum:
+Minimum render configuration:
 
-```text
-TRIVEN_DOMAIN=devansh.info
-FRONTEND_URL=https://devansh.info
-GEMINI_API_KEY
-MODAL_TOKEN_ID
-MODAL_TOKEN_SECRET
-MODAL_APP_NAME
-MODAL_FUNCTION_NAME
+```env
+TRIVEN_DOMAIN="devansh.info"
+APP_ENV="production"
+DEBUG=false
+FRONTEND_URL="https://devansh.info"
+CORS_ORIGINS=""
+VIDEO_PROVIDER="modal"
+GEMINI_API_KEY="..."
+MODAL_TOKEN_ID="..."
+MODAL_TOKEN_SECRET="..."
 ```
 
-`TRIVEN_DOMAIN` is intentionally pinned to `devansh.info` for this demo. The production preflight rejects another hostname until the demo deployment is intentionally changed.
+For billing and YouTube, follow `docs/AI_VIDEO_FACTORY.md`.
 
-Use a dedicated Modal production token. The Modal Python client reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, so the VPS does not need your personal `~/.modal.toml`.
+Use a dedicated Modal production token. Never put server secrets into `NEXT_PUBLIC_*` variables.
 
-For a reproducible Modal runtime, replace `TRIVEN_LTX_REPO_REF=main` with the exact LTX commit/tag you have validated.
-
-## 6. Preflight
+## 5. Preflight
 
 ```bash
 python3 scripts/production_preflight.py
 ```
 
-Fix every `[FAIL]` before deploying. Warnings explain non-blocking issues such as DNS not being propagated yet or the LTX repository still being unpinned.
+Fix every `[FAIL]` before deploying. The script expects host Nginx to own public 80/443.
 
-## 7. Deploy
+## 6. Deploy application containers
 
 ```bash
 ./scripts/deploy_hostinger.sh
 ```
 
-The script:
+Or directly:
 
-- validates the production environment;
-- creates a state backup before replacing containers;
-- pulls current base images while rebuilding;
-- starts/recreates the API, web, Caddy and maintenance services;
-- waits for FastAPI readiness;
-- attempts an external HTTPS health check.
+```bash
+docker compose -f docker-compose.production.yml up -d --build api web maintenance
+```
 
 Status:
 
@@ -131,104 +129,76 @@ Status:
 ./scripts/status_hostinger.sh
 ```
 
-Live logs:
+## 7. Modal deployment
+
+Redeploy Modal whenever `modal/app.py`, `modal/ltx_worker.py`, GPU type, LTX pipeline flags, or model runtime configuration changes:
 
 ```bash
-docker compose -f docker-compose.production.yml logs -f --tail=200
+set -a
+source .env
+set +a
+modal deploy modal/app.py
 ```
 
-## 8. Modal deployment
+The long-video temporal-window patch does **not** require downloading LTX weights again.
 
-Normal web/API deployments do not redownload LTX model weights. The LTX model volume stays in Modal.
+## 8. Duration profiles
 
-Only redeploy the Modal application when `modal/app.py`, LTX runtime code, GPU type, or model runtime configuration changes:
-
-```bash
-docker compose -f docker-compose.production.yml run --rm api \
-  modal deploy /app/modal/app.py
-```
-
-If model files already exist in the Modal volume, do not run the model-download setup again.
-
-## 9. Persistent storage and cleanup
-
-Application state is bind-mounted from:
+Defaults:
 
 ```text
-/opt/triven-cinema/storage/
+preview: 10s/scene
+1080p delivery: 30s/scene
+4K delivery: 15s/scene
+factory total: 300s
 ```
 
-The maintenance container runs every six hours and:
+Long Modal scenes use upstream LTX-2.5 temporal windows with overlap/blending inside one inference invocation. Strict continuity between story scenes uses the final frame of the previous scene as frame-0 conditioning for the next scene.
 
-1. creates a consistent SQLite/metrics state backup;
-2. removes expired preview/final media according to `.env` retention values;
-3. prunes old completed/failed job records;
-4. removes state backups older than `BACKUP_RETENTION_DAYS`.
+## 9. Persistent state and cleanup
 
-Manual dry-run cleanup:
+`./storage` is bind-mounted into the API and maintenance containers. It contains generated media plus job/billing/integration state. The maintenance service runs backups and cleanup every six hours.
+
+Manual backup:
 
 ```bash
-docker compose -f docker-compose.production.yml exec -T api \
-  python /app/scripts/cleanup_storage.py
+docker compose -f docker-compose.production.yml exec -T api python /app/scripts/backup_state.py
 ```
 
-Manual state backup:
+Manual cleanup dry run:
 
 ```bash
-docker compose -f docker-compose.production.yml exec -T api \
-  python /app/scripts/backup_state.py
+docker compose -f docker-compose.production.yml exec -T api python /app/scripts/cleanup_storage.py
 ```
 
-These local backups protect against application mistakes, not total VPS/disk loss. Enable Hostinger snapshots/backups and copy important final media to offsite/object storage if it must survive loss of the VPS.
+Enable Hostinger snapshots/backups as well. Local backups do not protect against total VPS/disk loss.
 
-## 10. Updating the application
-
-After pulling/uploading new code:
+## 10. Updates
 
 ```bash
-cd /opt/triven-cinema
+cd ~/triven-cinema
+git pull
 ./scripts/deploy_hostinger.sh
 ```
 
-The host `storage/` directory and Caddy certificate volumes survive container rebuilds.
-
-Before major upgrades, keep a Git tag/commit you can return to. A simple rollback is:
+If Modal worker code changed:
 
 ```bash
-git checkout <previous-known-good-commit>
-./scripts/deploy_hostinger.sh
+set -a; source .env; set +a
+modal deploy modal/app.py
 ```
-
-Do not roll back the `storage/` directory unless you intentionally want to restore older application state.
 
 ## 11. Production checks
 
-From the VPS:
-
 ```bash
-./scripts/status_hostinger.sh
+curl http://127.0.0.1:3334/api/v1/health/ready
+curl -I http://127.0.0.1:3333
+curl -I https://devansh.info
+curl https://devansh.info/api/v1/health
 ```
 
-From another machine/network:
+Then run one short paid smoke render before a 15s/30s production render.
 
-```bash
-curl -fsS https://devansh.info/api/v1/health/ready
-```
+## Scaling boundary
 
-Then test the actual product flow with one short preview render before submitting longer paid generations.
-
-## 12. Security checklist
-
-- Keep `.env` mode `600` and never commit it.
-- Use SSH keys; disable password SSH only after key access is proven.
-- Public ports should normally be only SSH, HTTP and HTTPS.
-- Do not publish 3000 or 8000.
-- Keep Ubuntu and Docker security updates current.
-- Keep synchronous paid render endpoints disabled in production.
-- Use a dedicated Modal token for this server and rotate it if exposed.
-- Add real application authentication (or an access gateway) before allowing untrusted users to generate paid videos.
-- Do not put Gemini, Modal or Hugging Face secrets into `NEXT_PUBLIC_*` variables.
-
-## Current architecture limit
-
-The current render queue is process-local and job state uses SQLite. Keep one API application instance and one application VPS. Before horizontal scaling, migrate queue/state to a durable shared system (for example Postgres/Redis) and generated media to object storage.
+This is a hardened single-VPS architecture, not a horizontally scalable multi-tenant control plane. Before multiple API instances, migrate SQLite state to Postgres, the in-process job executor to a durable queue, generated media to S3/R2, and signed-browser workspace identity to real customer authentication/RBAC.

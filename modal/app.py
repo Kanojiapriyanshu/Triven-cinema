@@ -6,7 +6,7 @@ from pathlib import Path
 
 import modal
 
-from ltx_worker import build_command, run_ltx_command
+from ltx_worker import build_command, run_ltx_command, temporal_chunk_count
 from models import MODEL_ROOT, REQUIRED_MODEL_FILES
 
 
@@ -156,6 +156,7 @@ def generate_video(
         "render_seconds": elapsed,
         "gpu": GPU_TYPE,
         "reference_conditioned": bool(reference_image_bytes),
+        "chunk_count": temporal_chunk_count(duration_seconds),
     }
 
 

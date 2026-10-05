@@ -4,7 +4,8 @@ from pydantic import BaseModel, Field
 
 
 AspectRatio = Literal["16:9", "9:16", "1:1"]
-RenderQuality = Literal["preview", "1080p"]
+RenderQuality = Literal["preview", "1080p", "4k"]
+AudioMode = Literal["native", "mastered", "mute"]
 VideoProviderName = Literal["huggingface", "modal"]
 VideoModelName = Literal["ltx-2.5", "wan", "minimax"]
 DecoderName = Literal["conv", "diffusion"]
@@ -13,9 +14,13 @@ JobStatusName = Literal["queued", "running", "completed", "failed"]
 JobStageName = Literal[
     "queued",
     "initializing",
+    "planning",
     "rendering",
+    "composing",
     "delivery",
     "probing",
+    "billing",
+    "publishing",
     "completed",
     "failed",
 ]
@@ -31,7 +36,7 @@ class PlanQualityReport(BaseModel):
 class ScenePlanRequest(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=5000)
     aspect_ratio: AspectRatio = "16:9"
-    scene_count: int = Field(default=4, ge=1, le=10)
+    scene_count: int = Field(default=4, ge=1, le=20)
 
 
 class Scene(BaseModel):
@@ -56,11 +61,13 @@ class ScenePlanResponse(BaseModel):
 class VideoGenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=10, max_length=8000)
     aspect_ratio: AspectRatio = "16:9"
-    duration_seconds: float = Field(default=1.0, ge=1.0, le=5.0)
+    duration_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
     decoder: DecoderName = "conv"
     enhance_prompt: bool = False
     quality: RenderQuality = "preview"
+    audio_mode: AudioMode = "native"
+    audio_direction: str | None = Field(default=None, max_length=1200)
     provider: VideoProviderName | None = None
     model: VideoModelName = "ltx-2.5"
 
@@ -101,6 +108,8 @@ class VideoGenerationResponse(BaseModel):
     model: str
     quality: RenderQuality
     quality_note: str
+    audio_mode: AudioMode = "native"
+    chunk_count: int = 1
     gpu: str | None = None
     media_info: MediaInfo
     estimated_cost_usd: float | None = None
@@ -121,11 +130,13 @@ class FullVideoScene(BaseModel):
 class FullVideoGenerationRequest(BaseModel):
     scenes: list[FullVideoScene] = Field(..., min_length=1, max_length=20)
     aspect_ratio: AspectRatio = "16:9"
-    duration_seconds: float = Field(default=1.0, ge=1.0, le=5.0)
+    duration_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
     decoder: DecoderName = "conv"
     enhance_prompt: bool = False
     quality: RenderQuality = "preview"
+    audio_mode: AudioMode = "native"
+    audio_direction: str | None = Field(default=None, max_length=1200)
     provider: VideoProviderName | None = None
     model: VideoModelName = "ltx-2.5"
     continuity_mode: ContinuityMode = "strict"
@@ -147,6 +158,7 @@ class FullVideoGenerationResponse(BaseModel):
     model: str
     quality: RenderQuality
     quality_note: str
+    audio_mode: AudioMode = "native"
     gpu: str | None = None
     media_info: MediaInfo
     estimated_cost_usd: float | None = None
@@ -158,6 +170,7 @@ class CombineScenesRequest(BaseModel):
     scene_video_urls: list[str] = Field(..., min_length=1, max_length=50)
     aspect_ratio: AspectRatio = "16:9"
     quality: RenderQuality = "preview"
+    audio_mode: AudioMode = "native"
 
 
 class CombineScenesResponse(BaseModel):
@@ -167,6 +180,7 @@ class CombineScenesResponse(BaseModel):
     scene_count: int
     quality: RenderQuality
     quality_note: str
+    audio_mode: AudioMode = "native"
     media_info: MediaInfo
 
 
@@ -177,8 +191,12 @@ class GenerationCapabilitiesResponse(BaseModel):
     aspect_ratios: list[AspectRatio]
     decoders: list[DecoderName]
     continuity_modes: list[ContinuityMode]
+    audio_modes: list[AudioMode]
     image_conditioning: bool
     max_scene_duration_seconds: float
+    max_scene_duration_seconds_by_quality: dict[str, float]
+    native_chunk_seconds: float
+    max_factory_duration_seconds: int
     async_jobs: bool
     audio_probe: bool
     cost_tracking_configured: bool
@@ -201,7 +219,7 @@ class GenerationJobResponse(BaseModel):
     progress: int
     message: str
     payload: dict
-    result: VideoGenerationResponse | None = None
+    result: dict | None = None
     error: str | None = None
     created_at: str
     updated_at: str

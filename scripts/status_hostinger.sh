@@ -23,4 +23,6 @@ df -h storage 2>/dev/null || df -h .
 du -sh storage/generated storage/backups 2>/dev/null || true
 
 printf '\nRecent logs:\n'
-"${COMPOSE[@]}" logs --tail=50 api web caddy maintenance
+"${COMPOSE[@]}" logs --tail=50 api web maintenance
+printf '\nHost Nginx status:\n'
+systemctl is-active nginx 2>/dev/null || true

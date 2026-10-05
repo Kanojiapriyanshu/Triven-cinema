@@ -15,10 +15,13 @@ class VideoGenerationResult:
     gpu: str | None = None
     wall_seconds: float | None = None
     reference_conditioned: bool = False
+    chunk_count: int = 1
 
 
 class VideoProvider(ABC):
     name: str
+    # Providers may opt into native temporal windowing for long clips.
+    supports_native_long_video: bool = False
 
     @abstractmethod
     def generate(

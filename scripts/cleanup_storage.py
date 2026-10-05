@@ -51,7 +51,7 @@ def cleanup_generated(apply: bool) -> tuple[int, int]:
     for path in GENERATED.iterdir():
         if not path.is_file() or path.name.endswith(".part"):
             continue
-        days = final_days if path.name.startswith("final-") else preview_days
+        days = final_days if path.name.startswith(("final-", "factory-")) else preview_days
         if not expired(path, days, now):
             continue
         size = path.stat().st_size

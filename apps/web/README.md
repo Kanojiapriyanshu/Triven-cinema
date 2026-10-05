@@ -14,7 +14,7 @@ The browser uses same-origin `/api` and `/media` URLs. `next.config.ts` rewrites
 
 ## Hostinger VPS production
 
-The production Docker stack builds this app with the internal API URL set to `http://api:8000`. Caddy terminates HTTPS and routes browser requests on the public domain.
+The production Docker stack builds this app with the internal API URL set to `http://api:8000`. Host Nginx terminates HTTPS and routes `devansh.info` to the loopback-only web/API container ports.
 
 ```bash
 cd ../..

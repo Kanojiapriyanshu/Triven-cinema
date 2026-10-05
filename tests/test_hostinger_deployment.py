@@ -12,13 +12,18 @@ class HostingerDeploymentTests(unittest.TestCase):
         self.compose = yaml.safe_load((ROOT / "docker-compose.production.yml").read_text())
         self.services = self.compose["services"]
 
-    def test_only_caddy_publishes_public_ports(self):
-        self.assertNotIn("ports", self.services["api"])
-        self.assertNotIn("ports", self.services["web"])
+    def test_services_bind_only_to_loopback(self):
+        self.assertNotIn("caddy", self.services)
+        self.assertIn("127.0.0.1:3334:8000", self.services["api"]["ports"])
+        self.assertIn("127.0.0.1:3333:3000", self.services["web"]["ports"])
         self.assertNotIn("ports", self.services["maintenance"])
-        caddy_ports = {str(value) for value in self.services["caddy"]["ports"]}
-        self.assertIn("80:80", caddy_ports)
-        self.assertIn("443:443", caddy_ports)
+
+    def test_host_nginx_routes_public_traffic_to_loopback_services(self):
+        nginx = (ROOT / "deploy/hostinger/nginx.triven-cinema.conf").read_text()
+        self.assertIn("server_name devansh.info;", nginx)
+        self.assertIn("proxy_pass http://127.0.0.1:3333;", nginx)
+        self.assertIn("proxy_pass http://127.0.0.1:3334;", nginx)
+        self.assertNotIn("proxy_pass http://api:8000;", nginx)
 
     def test_api_and_maintenance_share_persistent_storage(self):
         self.assertIn("./storage:/app/storage", self.services["api"]["volumes"])
@@ -26,19 +31,20 @@ class HostingerDeploymentTests(unittest.TestCase):
 
     def test_production_template_protects_paid_render_path(self):
         text = (ROOT / ".env.production.example").read_text()
-        self.assertIn("APP_ENV=\"production\"", text)
-        self.assertIn("VIDEO_PROVIDER=\"modal\"", text)
+        self.assertIn('APP_ENV="production"', text)
+        self.assertIn('VIDEO_PROVIDER="modal"', text)
         self.assertIn("ENABLE_SYNC_RENDER_ENDPOINTS=false", text)
         self.assertIn("JOB_WORKERS=1", text)
         self.assertIn("JOB_MAX_PENDING=3", text)
+        self.assertIn("MAX_1080P_SCENE_SECONDS=30", text)
+        self.assertIn("MAX_4K_SCENE_SECONDS=15", text)
 
     def test_demo_domain_is_pinned_to_devansh_info(self):
         env_text = (ROOT / ".env.production.example").read_text()
-        caddy_text = (ROOT / "deploy/hostinger/Caddyfile").read_text()
+        nginx_text = (ROOT / "deploy/hostinger/nginx.triven-cinema.conf").read_text()
         self.assertIn('TRIVEN_DOMAIN="devansh.info"', env_text)
         self.assertIn('FRONTEND_URL="https://devansh.info"', env_text)
-        self.assertTrue(caddy_text.lstrip().startswith("devansh.info {"))
-        self.assertNotIn("cinema.example.com", caddy_text)
+        self.assertIn("server_name devansh.info;", nginx_text)
 
 
 if __name__ == "__main__":

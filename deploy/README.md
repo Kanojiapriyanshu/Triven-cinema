@@ -8,7 +8,7 @@ Use the Hostinger deployment guide:
 deploy/hostinger/README.md
 ```
 
-The production Docker Compose stack keeps FastAPI and Next.js private and exposes only Caddy on ports 80/443. Browser traffic stays same-origin, while `/api/*` and `/media/*` are routed to FastAPI internally.
+The production Docker Compose stack keeps FastAPI and Next.js loopback-only. The existing host Nginx owns ports 80/443 and routes same-origin `/api/*` and `/media/*` traffic to FastAPI on 127.0.0.1:3334, with all other traffic sent to Next.js on 127.0.0.1:3333.
 
 ```bash
 ./scripts/deploy_hostinger.sh

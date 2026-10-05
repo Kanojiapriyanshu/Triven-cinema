@@ -38,7 +38,7 @@ for _ in $(seq 1 60); do
         echo "Public HTTPS health check passed."
       else
         echo "Warning: containers are healthy, but public HTTPS is not reachable yet." >&2
-        echo "Check DNS A/AAAA records, Hostinger firewall/UFW, and Caddy logs." >&2
+        echo "Check DNS A/AAAA records, Hostinger firewall/UFW, Nginx config, and Certbot certificate status." >&2
       fi
     fi
     exit 0

@@ -1,6 +1,6 @@
 # Triven Cinema
 
-Triven Cinema is the low-cost AI video-generation MVP described in the project recording: prompt input, optional AI storyboard generation, self-hosted LTX-2.5 on on-demand Modal GPU, required aspect ratios, reusable scene previews, FFmpeg composition, 1080-class delivery output, native-audio inspection, persistent render jobs, progress, and cost/benchmark tooling.
+Triven Cinema is an AI video factory: prompt input, continuity-locked storyboard planning, self-hosted LTX-2.5 on on-demand Modal GPU, long-form scene generation, synchronized/native audio handling, FFmpeg delivery mastering, Stripe generation credits, connected-channel YouTube publishing, persistent render jobs, progress, and cost/benchmark tooling.
 
 ## Implemented now
 
@@ -12,6 +12,9 @@ Triven Cinema is the low-cost AI video-generation MVP described in the project r
   - Self-hosted Modal deployment with persistent model/output volumes.
 - B200 deployment path already supported through `TRIVEN_MODAL_GPU`.
 - 16:9, 9:16 and 1:1 source profiles.
+- Customer duration profiles: preview up to 10s, 1080p up to 30s/scene, 4K delivery up to 15s/scene.
+- LTX-2.5 native temporal-window rendering for long Modal scenes with carry/blend overlap.
+- Prompt-to-finished-video Factory mode with strict scene continuity and up to 300s total runtime by default.
 - Persistent asynchronous video jobs in `storage/jobs/jobs.sqlite3`.
 - UI polling with coarse real job stages: queued -> initializing -> rendering -> delivery -> probing -> complete.
 - Per-scene source previews and regeneration.
@@ -19,6 +22,9 @@ Triven Cinema is the low-cost AI video-generation MVP described in the project r
 - Storyboard scene previews stay at source resolution even when final quality is 1080p, so the final sequence is upscaled only once.
 - FFmpeg scene composition with audio-preservation handling.
 - Native/embedded audio stream probing through `ffprobe`.
+- Native/mastered/mute audio delivery modes; mastered mode applies final loudness normalization.
+- Stripe Checkout credit packs with idempotent webhook ledger, render charging, and failed-job refunds.
+- Per-workspace encrypted YouTube OAuth connection and resumable final-master uploads.
 - Final MP4 preview and download.
 - Render timing metrics and optional GPU cost estimates.
 - Seed, decoder and prompt-enhancement controls in the UI.
@@ -173,7 +179,7 @@ The production target is a **Hostinger Linux VPS** running the application layer
 ./scripts/deploy_hostinger.sh
 ```
 
-The browser uses same-origin `/api` and `/media` routes through Caddy. FastAPI and Next.js are not published directly to the internet.
+The browser uses same-origin `/api` and `/media` routes through the existing host Nginx. FastAPI and Next.js bind only to loopback ports 3334/3333 and are not published directly to the internet.
 
 For multi-instance production, move generated media/job state from local disk to object storage/Postgres before scaling horizontally.
 
@@ -190,6 +196,14 @@ POST /api/v1/generations/combine
 POST /api/v1/generations/full-video
 GET  /api/v1/generations/metrics/summary
 GET  /api/v1/generations/download/{filename}
+POST /api/v1/factory/jobs
+GET  /api/v1/billing/catalog
+GET  /api/v1/billing/me
+POST /api/v1/billing/checkout
+POST /api/v1/billing/webhook
+GET  /api/v1/youtube/status
+POST /api/v1/youtube/connect
+POST /api/v1/youtube/publish
 ```
 
 ## Still not honestly "done"
@@ -204,7 +218,6 @@ These are not silently claimed as complete because the recording/source does not
 - ElevenLabs voice generation and voice/video synchronization.
 - Background music generation/mixing.
 - Latest-topic research -> script automation.
-- YouTube auto-publishing.
 - Production Postgres/object storage/HA deployment.
 
 ---
@@ -218,7 +231,7 @@ The production path is:
 ```text
 Internet / HTTPS
       ↓
-Caddy on Hostinger VPS · ports 80/443
+Host Nginx on Hostinger VPS · ports 80/443
       ↓
   ┌───────────────┬────────────────┐
   ↓               ↓                ↓
@@ -233,12 +246,12 @@ Next.js :3000   FastAPI :8000    /media
 
 Production behavior:
 
-- Caddy is the only public-facing service.
+- Host Nginx is the only public-facing HTTP service for this deployment.
 - FastAPI and Next.js stay on the private Docker network.
-- `/api/*` and `/media/*` are routed directly to FastAPI; all other traffic goes to Next.js.
+- `/api/*` and `/media/*` are routed by host Nginx to FastAPI on 127.0.0.1:3334; all other traffic goes to Next.js on 127.0.0.1:3333.
 - Modal authentication uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the VPS `.env`.
 - Paid render jobs remain bounded (`JOB_WORKERS=1`, `JOB_MAX_PENDING=3` by default).
-- Only generated media is public; jobs SQLite and metrics stay private.
+- Generated media is served through a signed-workspace ownership check; jobs SQLite, billing/integration state, metrics and backups stay private.
 - Health checks, Docker restart policies and log rotation are enabled.
 - Generated previews/finals are retained according to `.env` limits and cleaned by the maintenance container.
 - SQLite/metrics state is backed up before deployments and periodically by the maintenance container.
@@ -275,4 +288,9 @@ Continuity modes:
 
 For a 45-second demo, use **9 scenes x 5 seconds**. The UI supports up to 10 storyboard scenes.
 
-The demo production domain is currently pinned to **https://devansh.info**. Caddy, production environment examples, preflight checks, and Hostinger health checks all target that hostname.
+The demo production domain is currently pinned to **https://devansh.info**. Host Nginx, production environment examples, preflight checks, and Hostinger health checks all target that hostname.
+
+
+## AI video factory / billing / YouTube
+
+See `docs/AI_VIDEO_FACTORY.md` for the long-form LTX profile, audio pipeline, Stripe customer-payment flow, connected YouTube publishing, and Hostinger deployment instructions.

@@ -14,6 +14,7 @@ class VideoProfileTests(unittest.TestCase):
         self.assertEqual(delivery_dimensions("16:9"), (1920, 1080))
         self.assertEqual(delivery_dimensions("9:16"), (1080, 1920))
         self.assertEqual(delivery_dimensions("1:1"), (1080, 1080))
+        self.assertEqual(delivery_dimensions("16:9", "4k"), (3840, 2160))
 
 
 if __name__ == "__main__":

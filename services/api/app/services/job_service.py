@@ -224,6 +224,53 @@ def get_job(job_id: str) -> dict | None:
     }
 
 
+
+def workspace_owns_generated_file(workspace_id: str, filename: str) -> bool:
+    """Return True only when a completed job for this workspace references the file.
+
+    Production media is intentionally not exposed as a raw static directory. Generated
+    filenames are random, but authorization still follows the signed workspace identity.
+    The single-VPS store is small enough to inspect completed result JSON safely; move this
+    ownership relation into Postgres/object metadata when the platform becomes multi-node.
+    """
+    clean_workspace = workspace_id.strip()
+    clean_filename = Path(filename).name
+    if not clean_workspace or not clean_filename or clean_filename != filename:
+        return False
+
+    initialize_job_store()
+    with _DB_LOCK, closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT payload_json, result_json
+            FROM generation_jobs
+            WHERE status = 'completed' AND result_json IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 500
+            """
+        ).fetchall()
+
+    def contains_filename(value: object) -> bool:
+        if isinstance(value, str):
+            return Path(value.split('?', 1)[0]).name == clean_filename
+        if isinstance(value, dict):
+            return any(contains_filename(item) for item in value.values())
+        if isinstance(value, list):
+            return any(contains_filename(item) for item in value)
+        return False
+
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+            result = json.loads(row["result_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if str(payload.get("workspace_id") or "") != clean_workspace:
+            continue
+        if contains_filename(result):
+            return True
+    return False
+
 def submit_job(
     job_type: str,
     payload: dict,

@@ -1,103 +1,57 @@
 # Triven Cinema production audit — Hostinger VPS
 
-## Production architecture
-
-Triven Cinema now targets a **single Hostinger Linux VPS** for the web/API/orchestration layer and **Modal** for LTX 2.5 GPU inference.
+## Current production architecture
 
 ```text
 Internet
-  |
-  v
-Caddy :80/:443
-  |--------------------|
-  v                    v
-Next.js :3000       FastAPI :8000
-                        |
-                        +-- SQLite job state
-                        +-- generated media on VPS storage
-                        +-- Gemini storyboard planner / local fallback
-                        +-- Modal API -> LTX 2.5 GPU rendering
+  -> host Nginx :80/:443
+     -> 127.0.0.1:3333 Next.js
+     -> 127.0.0.1:3334 FastAPI
+        -> persistent local job/billing/integration state
+        -> generated media
+        -> Gemini/fallback planner
+        -> Modal API -> B200 -> LTX-2.5
 ```
 
-The VPS does not need a GPU and does not store LTX model weights.
+Docker does not publish the application on public interfaces. Nginx/Certbot already serve other Triven domains on this VPS, so Caddy is intentionally not part of the Compose stack.
 
 ## Production issues addressed
 
-### 1. Application ports were directly exposable
+1. **Public app ports:** API/web bind only to `127.0.0.1:3334` / `127.0.0.1:3333`.
+2. **Same-origin browser routing:** Nginx routes `/api/*` and `/media/*` to FastAPI; everything else goes to Next.js.
+3. **Internal-state exposure:** SQLite/metrics/backups are private, and `/media/generated/{filename}` is served through a signed-workspace ownership check instead of a raw static storage mount.
+4. **Paid GPU concurrency:** bounded production job queue; synchronous paid render routes can be disabled.
+5. **Planner resilience:** Gemini has bounded timeouts and local storyboard fallback.
+6. **Process recovery:** Docker restart policies, health checks and graceful shutdown are configured.
+7. **Storage growth:** disk floor, retention cleanup, backup pruning and Docker log rotation.
+8. **State backup:** jobs, billing and integration SQLite databases are backed up before deploys and by maintenance.
+9. **Modal credentials:** server uses dedicated `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`.
+10. **TLS:** existing host Nginx + Certbot owns ports 80/443 and the `devansh.info` certificate.
+11. **Long scenes:** 1080p supports 30s/scene and 4K delivery supports 15s/scene. Modal LTX uses upstream temporal-window carry/blend for long scenes.
+12. **Audio:** LTX audio is probed, preserved/mastered/muted explicitly; missing audio is surfaced rather than hidden.
+13. **Customer payment:** Stripe Checkout credit packs + signed webhook + idempotent credit ledger + failure refunds.
+14. **Publishing:** encrypted per-workspace YouTube OAuth refresh tokens + resumable/chunked uploads.
+15. **Workspace isolation:** background job polling is restricted to the signed workspace that created the job.
 
-FastAPI and Next.js should not be public production listeners.
+## Required launch checks
 
-**Fix:** Docker Compose uses `expose` for ports 8000/3000. Only Caddy publishes 80/443.
+- `.env` mode 600 and not tracked by Git.
+- rotate any token previously pasted into chat/terminal history before public launch.
+- `TRIVEN_SECRET_KEY` set before billing/YouTube is enabled.
+- Stripe Checkout and webhook verified before `BILLING_ENFORCE_CREDITS=true`.
+- YouTube OAuth callback registered exactly and private uploads tested before allowing public/unlisted.
+- LTX repository revision pinned after the current long-video profile is benchmarked.
+- Modal worker redeployed after this patch.
+- at least one 30s 1080p and one 15s 4K delivery smoke test completed before advertising those profiles.
 
-### 2. Remote browsers could resolve localhost incorrectly
+## Scaling boundary
 
-A browser on another computer must never receive an API URL such as `http://localhost:8000`.
+The current queue is process-local and control-plane state uses SQLite. It is appropriate for the current single-VPS deployment, but it is not horizontal enterprise infrastructure.
 
-**Fix:** the web app uses same-origin `/api` and `/media` paths. Caddy routes those paths to FastAPI.
+Before a broad multi-tenant launch, migrate:
 
-### 3. Generated media and internal state needed separation
-
-SQLite job state, metrics, backups and logs must not be publicly downloadable.
-
-**Fix:** FastAPI only exposes generated media under `/media/generated`; internal storage remains private.
-
-### 4. Paid GPU work needed bounded concurrency
-
-Unbounded concurrent jobs can consume Modal credits quickly.
-
-**Fix:** production defaults to one render worker with a small pending queue. Synchronous paid-render endpoints are disabled in the production profile.
-
-### 5. Storyboard planning could block the product
-
-Gemini quota errors, slow responses or request failures previously left the UI waiting.
-
-**Fix:** single-scene requests use the prompt directly; multi-scene planning uses a bounded remote request and falls back to an editable local storyboard.
-
-### 6. Container/process recovery was not production-safe
-
-Development reloaders and manually started terminals are not suitable for a VPS.
-
-**Fix:** Docker Compose uses restart policies, health checks, init handling and graceful shutdown windows.
-
-### 7. VPS storage could grow without bound
-
-Generated previews/finals, jobs, metrics and logs can eventually fill a VPS disk.
-
-**Fix:** retention limits, free-disk checks, scheduled maintenance, backup pruning and Docker log rotation are included.
-
-### 8. Deployments needed state protection
-
-Rebuilding containers must not silently destroy job state or media.
-
-**Fix:** `storage/` is bind-mounted from the VPS host and a state backup is attempted before each deploy. Caddy certificate data is stored in named volumes.
-
-### 9. Modal authentication needed server-safe credentials
-
-A production VPS should not depend on a developer's personal Modal config file.
-
-**Fix:** production uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` from the private `.env` file.
-
-### 10. HTTPS and reverse proxy configuration were missing
-
-**Fix:** Caddy is included in the production Compose stack and automatically manages TLS after DNS points to the VPS.
-
-## Required production checks
-
-Before deployment:
-
-1. Use an Ubuntu LTS Hostinger VPS with Docker Engine and Docker Compose.
-2. Point `TRIVEN_DOMAIN` DNS to the VPS.
-3. Allow only SSH, TCP 80, TCP/UDP 443 publicly; do not expose 3000/8000.
-4. Copy `.env.production.example` to `.env`, fill secrets, and run `chmod 600 .env`.
-5. Use a dedicated Modal production token.
-6. Run `python3 scripts/production_preflight.py` and fix every `[FAIL]`.
-7. Deploy with `./scripts/deploy_hostinger.sh`.
-8. Verify with `./scripts/status_hostinger.sh` and a short paid render.
-9. Enable Hostinger snapshots/backups; local state backups do not protect against total VPS/disk loss.
-10. Add application authentication or an access gateway before allowing untrusted users to trigger paid renders.
-
-## Current scaling boundary
-
-The current queue is process-local and job state uses SQLite. This is intentionally a **single-VPS / single-API-instance** architecture.
-
-Before horizontal scaling, migrate job state/queue to shared infrastructure such as Postgres + Redis and move generated media to object storage such as S3/R2.
+- jobs/billing/integrations -> Postgres;
+- executor -> Redis/SQS/another durable queue;
+- generated media -> S3/R2/object storage;
+- signed browser workspace -> real login + organizations/RBAC;
+- metrics/logging -> centralized observability and alerting.

@@ -116,7 +116,7 @@ def main() -> int:
         elif hostname_resolves(domain):
             ok(f"DNS resolves for {domain}")
         else:
-            warn(f"DNS does not currently resolve for {domain}; Caddy HTTPS cannot issue a public certificate yet")
+            warn(f"DNS does not currently resolve for {domain}; Nginx/Certbot HTTPS cannot issue a public certificate yet")
 
         frontend_url = env.get("FRONTEND_URL", "").rstrip("/")
         expected_url = f"https://{domain}"
@@ -188,6 +188,46 @@ def main() -> int:
     else:
         warn("GEMINI_API_KEY is empty; multi-scene planning will use the local fallback")
 
+    billing_enabled = env.get("BILLING_ENABLED", "false").lower() in {"true", "1", "yes"}
+    if billing_enabled:
+        for key in ("TRIVEN_SECRET_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"):
+            if env.get(key):
+                ok(f"{key} configured for billing")
+            else:
+                fail(f"{key} is required when BILLING_ENABLED=true")
+        if any(env.get(key) for key in ("STRIPE_PRICE_STARTER", "STRIPE_PRICE_PRO", "STRIPE_PRICE_STUDIO")):
+            ok("At least one Stripe Checkout price is configured")
+        else:
+            fail("Configure at least one Stripe price when BILLING_ENABLED=true")
+    else:
+        ok("Billing integration is feature-gated off")
+
+    youtube_enabled = env.get("YOUTUBE_ENABLED", "false").lower() in {"true", "1", "yes"}
+    if youtube_enabled:
+        for key in ("TRIVEN_SECRET_KEY", "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"):
+            if env.get(key):
+                ok(f"{key} configured for YouTube")
+            else:
+                fail(f"{key} is required when YOUTUBE_ENABLED=true")
+        callback = env.get("YOUTUBE_REDIRECT_URI", "").strip() or (
+            f"https://{domain}/api/v1/youtube/callback" if domain else ""
+        )
+        if callback:
+            ok(f"YouTube OAuth callback: {callback}")
+    else:
+        ok("YouTube integration is feature-gated off")
+
+    try:
+        native_chunk = float(env.get("LTX_NATIVE_CHUNK_SECONDS", "10") or 10)
+        max_1080 = float(env.get("MAX_1080P_SCENE_SECONDS", "30") or 30)
+        max_4k = float(env.get("MAX_4K_SCENE_SECONDS", "15") or 15)
+        if native_chunk <= 0 or max_1080 < native_chunk or max_4k <= 0:
+            fail("Long-form duration profile is invalid")
+        else:
+            ok(f"Duration profiles configured: native chunk {native_chunk:g}s, 1080p {max_1080:g}s, 4K {max_4k:g}s")
+    except ValueError:
+        fail("Duration profile values must be numeric")
+
     if env.get("TRIVEN_LTX_REPO_REF", "main") == "main":
         warn("TRIVEN_LTX_REPO_REF=main is not reproducible; pin a validated commit/tag")
     else:
@@ -202,11 +242,20 @@ def main() -> int:
         else:
             ok(".env is not tracked by git")
 
+    nginx_template = ROOT / "deploy" / "hostinger" / "nginx.triven-cinema.conf"
+    if nginx_template.exists():
+        ok("Host Nginx reverse-proxy template is present")
+    else:
+        fail("deploy/hostinger/nginx.triven-cinema.conf is missing")
+
     for port in (80, 443):
         if port_in_use(port):
-            warn(f"Port {port} is already in use. This is normal during an update if Caddy is already running.")
+            if shutil.which("nginx"):
+                ok(f"Port {port} is in use; host Nginx is expected to own public HTTP/HTTPS")
+            else:
+                warn(f"Port {port} is already in use; verify the owning reverse proxy")
         else:
-            ok(f"Port {port} is available")
+            warn(f"Port {port} is not listening yet; enable Nginx/Certbot before public launch")
 
     if shutil.which("ufw"):
         ok("UFW command available")

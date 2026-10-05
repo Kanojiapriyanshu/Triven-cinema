@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import uuid
@@ -12,12 +13,14 @@ from inference.providers.base import VideoGenerationResult, VideoProvider
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(dotenv_path=PROJECT_ROOT / ".env", override=False)
 GENERATED_DIR = PROJECT_ROOT / "storage" / "generated"
+LOGGER = logging.getLogger("triven.modal_ltx")
 
 
 class ModalLTXProvider(VideoProvider):
     """Client for the self-hosted LTX-2.5 Modal app in modal/app.py."""
 
     name = "modal-ltx-2.5"
+    supports_native_long_video = True
 
     def __init__(self):
         self.app_name = os.getenv(
@@ -71,9 +74,16 @@ class ModalLTXProvider(VideoProvider):
                 reference_strength=float(reference_strength),
             )
         except Exception as exc:
+            LOGGER.exception(
+                "Modal LTX remote invocation failed app=%s function=%s",
+                self.app_name,
+                self.function_name,
+            )
+            detail = (str(exc) or repr(exc)).strip().replace("\n", " ")[:600]
             raise RuntimeError(
-                "Modal LTX generation failed. Ensure `modal deploy modal/app.py` "
-                "has completed and your Modal account has GPU access."
+                "Modal LTX generation failed. Redeploy the current worker with "
+                "`modal deploy modal/app.py`, then inspect `modal app logs "
+                f"{self.app_name}` if it still fails. Remote error: {detail}"
             ) from exc
 
         video_bytes = result.get("video_bytes")
@@ -107,4 +117,5 @@ class ModalLTXProvider(VideoProvider):
             gpu=str(result.get("gpu") or "Modal GPU"),
             wall_seconds=wall_elapsed,
             reference_conditioned=bool(result.get("reference_conditioned", False)),
+            chunk_count=max(1, int(result.get("chunk_count") or 1)),
         )

@@ -34,3 +34,5 @@ storage/benchmarks/*
 
 storage/logs/*
 storage/backups/*
+storage/billing/*
+storage/integrations/*

@@ -22,14 +22,11 @@ def _run_ffmpeg(command: list[str]) -> None:
         raise VideoCombineError("FFmpeg timed out while processing the video.") from exc
 
     if process.returncode != 0:
-        raise VideoCombineError(
-            "FFmpeg failed:\n" + process.stderr[-5000:]
-        )
-
+        raise VideoCombineError("FFmpeg failed:\n" + process.stderr[-5000:])
 
 
 def extract_last_frame(input_path: Path, output_path: Path) -> Path:
-    """Extract the final decoded frame as a PNG for scene-to-scene conditioning."""
+    """Extract the final decoded frame as a PNG for continuation conditioning."""
     if not input_path.exists():
         raise VideoCombineError(f"Input video does not exist: {input_path}")
 
@@ -43,8 +40,6 @@ def extract_last_frame(input_path: Path, output_path: Path) -> Path:
         str(input_path),
         "-frames:v",
         "1",
-        "-vsync",
-        "0",
         str(output_path),
     ]
     _run_ffmpeg(command)
@@ -52,7 +47,15 @@ def extract_last_frame(input_path: Path, output_path: Path) -> Path:
         raise VideoCombineError("FFmpeg did not produce a continuity frame.")
     return output_path
 
-def delivery_dimensions(aspect_ratio: str) -> tuple[int, int]:
+
+def delivery_dimensions(aspect_ratio: str, quality: str = "1080p") -> tuple[int, int]:
+    if quality == "4k":
+        if aspect_ratio == "9:16":
+            return 2160, 3840
+        if aspect_ratio == "1:1":
+            return 2160, 2160
+        return 3840, 2160
+
     if aspect_ratio == "9:16":
         return 1080, 1920
     if aspect_ratio == "1:1":
@@ -91,18 +94,13 @@ def _add_silent_audio(input_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-def combine_videos(
-    video_paths: list[Path],
-    output_path: Path,
-) -> Path:
+def combine_videos(video_paths: list[Path], output_path: Path) -> Path:
     if not video_paths:
         raise VideoCombineError("No video clips were provided.")
 
     for video_path in video_paths:
         if not video_path.exists():
-            raise VideoCombineError(
-                f"Video clip does not exist: {video_path}"
-            )
+            raise VideoCombineError(f"Video clip does not exist: {video_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     concat_file: Path | None = None
@@ -133,11 +131,8 @@ def combine_videos(
             encoding="utf-8",
         ) as handle:
             concat_file = Path(handle.name)
-
             for video_path in normalized_paths:
-                absolute_path = (
-                    video_path.resolve().as_posix().replace("'", "'\\''")
-                )
+                absolute_path = video_path.resolve().as_posix().replace("'", "'\\''")
                 handle.write(f"file '{absolute_path}'\n")
 
         command = [
@@ -164,53 +159,39 @@ def combine_videos(
         else:
             command.append("-an")
 
-        command.extend([
-            "-movflags",
-            "+faststart",
-            str(output_path),
-        ])
-
+        command.extend(["-movflags", "+faststart", str(output_path)])
         _run_ffmpeg(command)
 
         if not output_path.exists():
-            raise VideoCombineError(
-                "FFmpeg completed but final video was not created."
-            )
-
+            raise VideoCombineError("FFmpeg completed but final video was not created.")
         return output_path
-
     finally:
         if concat_file is not None and concat_file.exists():
             concat_file.unlink()
         for path in temporary_normalized:
-            if path.exists():
-                path.unlink()
+            path.unlink(missing_ok=True)
 
 
-def upscale_to_1080p(
+def transcode_delivery(
     input_path: Path,
     output_path: Path,
     aspect_ratio: str,
+    quality: str,
 ) -> Path:
-    """
-    Create a 1080-class delivery file exactly once.
-
-    If the input already has the requested delivery dimensions, it is reused to
-    avoid an unnecessary second lossy encode. This still does not claim that
-    source detail was natively generated at 1080p.
-    """
+    """Create the requested delivery master once after source generation/composition."""
     if not input_path.exists():
-        raise VideoCombineError(
-            f"Input video does not exist: {input_path}"
-        )
+        raise VideoCombineError(f"Input video does not exist: {input_path}")
+    if quality == "preview":
+        return input_path
+    if quality not in {"1080p", "4k"}:
+        raise VideoCombineError(f"Unsupported delivery quality: {quality}")
 
-    width, height = delivery_dimensions(aspect_ratio)
+    width, height = delivery_dimensions(aspect_ratio, quality)
     info = probe_media(input_path)
     if info.get("width") == width and info.get("height") == height:
         return input_path
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
     command = [
         "ffmpeg",
         "-y",
@@ -228,23 +209,59 @@ def upscale_to_1080p(
         "-pix_fmt",
         "yuv420p",
     ]
-
     if info.get("has_audio"):
-        command.extend(["-c:a", "aac", "-b:a", "192k"])
+        command.extend(["-c:a", "aac", "-b:a", "256k"])
     else:
         command.append("-an")
-
-    command.extend([
-        "-movflags",
-        "+faststart",
-        str(output_path),
-    ])
-
+    command.extend(["-movflags", "+faststart", str(output_path)])
     _run_ffmpeg(command)
 
     if not output_path.exists():
-        raise VideoCombineError(
-            "1080p delivery transcode completed but output was not created."
-        )
-
+        raise VideoCombineError(f"{quality} delivery transcode did not create an output file.")
     return output_path
+
+
+def process_audio(input_path: Path, output_path: Path, audio_mode: str) -> Path:
+    """Preserve native LTX audio, master it, or intentionally mute the file."""
+    if audio_mode == "native":
+        return input_path
+    if audio_mode not in {"mastered", "mute"}:
+        raise VideoCombineError(f"Unsupported audio mode: {audio_mode}")
+
+    info = probe_media(input_path)
+    if audio_mode == "mastered" and not info.get("has_audio"):
+        # Do not invent a silent stream and call it generated audio. Surface the
+        # probe result to the UI so missing model audio is visible.
+        return input_path
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = ["ffmpeg", "-y", "-i", str(input_path), "-map", "0:v:0", "-c:v", "copy"]
+    if audio_mode == "mute":
+        command.extend(["-an", "-movflags", "+faststart", str(output_path)])
+    else:
+        command.extend(
+            [
+                "-map",
+                "0:a:0?",
+                "-af",
+                "loudnorm=I=-14:TP=-1.5:LRA=11",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "256k",
+                "-ar",
+                "48000",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        )
+    _run_ffmpeg(command)
+    if not output_path.exists():
+        raise VideoCombineError("Audio post-processing did not create an output file.")
+    return output_path
+
+
+def upscale_to_1080p(input_path: Path, output_path: Path, aspect_ratio: str) -> Path:
+    """Backward-compatible wrapper used by older callers/tests."""
+    return transcode_delivery(input_path, output_path, aspect_ratio, "1080p")

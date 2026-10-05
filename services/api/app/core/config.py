@@ -38,7 +38,43 @@ class Settings(BaseSettings):
 
     default_render_quality: str = "preview"
     default_decoder: str = "conv"
-    default_scene_duration_seconds: float = 1.0
+    default_scene_duration_seconds: float = 5.0
+
+    # Customer-facing duration profiles. Long clips are rendered as safe native
+    # LTX chunks and chained with first-frame continuity, then composed once.
+    # Keep the native chunk conservative until a longer single-pass profile has
+    # been benchmarked on the deployed B200 worker.
+    ltx_native_chunk_seconds: float = 10.0
+    max_preview_scene_seconds: float = 10.0
+    max_1080p_scene_seconds: float = 30.0
+    max_4k_scene_seconds: float = 15.0
+    max_factory_duration_seconds: int = 300
+
+    # Workspace/session signing. Required when billing or YouTube integrations
+    # are enabled in production. Never commit the production value.
+    triven_secret_key: str = ""
+
+    # Stripe Checkout + credit ledger. Billing can be wired and tested while
+    # enforcement stays off; turn BILLING_ENFORCE_CREDITS=true only after the
+    # live webhook has been verified end-to-end.
+    billing_enabled: bool = False
+    billing_enforce_credits: bool = False
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_starter: str = ""
+    stripe_price_pro: str = ""
+    stripe_price_studio: str = ""
+    stripe_starter_seconds: int = 300
+    stripe_pro_seconds: int = 1800
+    stripe_studio_seconds: int = 7200
+
+    # YouTube Data API OAuth. The server stores refresh tokens encrypted at
+    # rest with a key derived from TRIVEN_SECRET_KEY.
+    youtube_enabled: bool = False
+    youtube_client_id: str = ""
+    youtube_client_secret: str = ""
+    youtube_redirect_uri: str = ""
+    youtube_allow_public: bool = False
 
     # Single-VPS production safety. One worker avoids duplicate in-memory queues
     # and prevents accidental parallel paid GPU renders.
@@ -64,6 +100,12 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.strip().lower() in {"production", "prod"}
+
+    @property
+    def youtube_callback_url(self) -> str:
+        if self.youtube_redirect_uri.strip():
+            return self.youtube_redirect_uri.strip()
+        return f"{self.frontend_url.rstrip('/')}" + "/api/v1/youtube/callback"
 
     @property
     def cors_origin_list(self) -> list[str]:

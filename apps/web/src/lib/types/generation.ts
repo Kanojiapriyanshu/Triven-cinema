@@ -1,17 +1,23 @@
 export type AspectRatio = "16:9" | "9:16" | "1:1";
-export type RenderQuality = "preview" | "1080p";
+export type RenderQuality = "preview" | "1080p" | "4k";
+export type AudioMode = "native" | "mastered" | "mute";
 export type VideoProviderName = "huggingface" | "modal";
 export type VideoModelName = "ltx-2.5" | "wan" | "minimax";
 export type DecoderName = "conv" | "diffusion";
 export type ContinuityMode = "off" | "balanced" | "strict";
-export type GenerationMode = "storyboard" | "direct";
+export type GenerationMode = "factory" | "storyboard" | "direct";
+export type YouTubePrivacy = "private" | "unlisted" | "public";
 export type JobStatusName = "queued" | "running" | "completed" | "failed";
 export type JobStageName =
   | "queued"
   | "initializing"
+  | "planning"
   | "rendering"
+  | "composing"
   | "delivery"
   | "probing"
+  | "billing"
+  | "publishing"
   | "completed"
   | "failed";
 
@@ -55,6 +61,8 @@ export interface VideoGenerationRequest {
   decoder: DecoderName;
   enhance_prompt: boolean;
   quality: RenderQuality;
+  audio_mode: AudioMode;
+  audio_direction?: string | null;
   provider: VideoProviderName;
   model: VideoModelName;
   continuity_mode?: ContinuityMode;
@@ -91,6 +99,8 @@ export interface VideoGenerationResponse {
   model: string;
   quality: RenderQuality;
   quality_note: string;
+  audio_mode: AudioMode;
+  chunk_count: number;
   gpu: string | null;
   media_info: MediaInfo;
   estimated_cost_usd: number | null;
@@ -116,6 +126,8 @@ export interface FullVideoGenerationRequest {
   decoder: DecoderName;
   enhance_prompt: boolean;
   quality: RenderQuality;
+  audio_mode: AudioMode;
+  audio_direction?: string | null;
   provider: VideoProviderName;
   model: VideoModelName;
   continuity_mode?: ContinuityMode;
@@ -137,6 +149,7 @@ export interface FullVideoGenerationResponse {
   model: string;
   quality: RenderQuality;
   quality_note: string;
+  audio_mode: AudioMode;
   gpu: string | null;
   media_info: MediaInfo;
   estimated_cost_usd: number | null;
@@ -148,6 +161,7 @@ export interface CombineScenesRequest {
   scene_video_urls: string[];
   aspect_ratio: AspectRatio;
   quality: RenderQuality;
+  audio_mode: AudioMode;
 }
 
 export interface CombineScenesResponse {
@@ -157,6 +171,7 @@ export interface CombineScenesResponse {
   scene_count: number;
   quality: RenderQuality;
   quality_note: string;
+  audio_mode: AudioMode;
   media_info: MediaInfo;
 }
 
@@ -180,8 +195,12 @@ export interface GenerationCapabilitiesResponse {
   aspect_ratios: AspectRatio[];
   decoders: DecoderName[];
   continuity_modes: ContinuityMode[];
+  audio_modes: AudioMode[];
   image_conditioning: boolean;
   max_scene_duration_seconds: number;
+  max_scene_duration_seconds_by_quality: Record<RenderQuality, number>;
+  native_chunk_seconds: number;
+  max_factory_duration_seconds: number;
   async_jobs: boolean;
   audio_probe: boolean;
   cost_tracking_configured: boolean;
@@ -204,7 +223,7 @@ export interface GenerationJobResponse {
   progress: number;
   message: string;
   payload: Record<string, unknown>;
-  result: VideoGenerationResponse | null;
+  result: Record<string, unknown> | null;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -234,9 +253,110 @@ export interface RenderedSceneVideo {
   mediaInfo: MediaInfo;
   estimatedCostUsd: number | null;
   qualityNote: string;
+  audioMode: AudioMode;
+  chunkCount: number;
   continuityMode: ContinuityMode;
   continuityApplied: boolean;
   referenceFrameFilename: string | null;
   continuityFrameUrl: string | null;
   continuityFrameFilename: string | null;
+}
+
+export interface FactoryGenerationRequest {
+  prompt: string;
+  target_duration_seconds: number;
+  scene_duration_seconds: number;
+  aspect_ratio: AspectRatio;
+  quality: RenderQuality;
+  audio_mode: AudioMode;
+  audio_direction?: string | null;
+  provider: VideoProviderName;
+  model: VideoModelName;
+  decoder: DecoderName;
+  seed: number;
+  continuity_mode: ContinuityMode;
+  continuity_strength: number;
+  enhance_prompt: boolean;
+  publish_to_youtube: boolean;
+  youtube_title?: string | null;
+  youtube_description?: string;
+  youtube_privacy?: YouTubePrivacy;
+  youtube_tags?: string[];
+  youtube_category_id?: string;
+  youtube_publish_at?: string | null;
+}
+
+export interface FactoryGenerationResponse {
+  final_video_url: string;
+  final_download_url: string;
+  final_filename: string;
+  target_duration_seconds: number;
+  actual_duration_seconds: number | null;
+  scene_count: number;
+  scene_duration_seconds: number;
+  aspect_ratio: AspectRatio;
+  quality: RenderQuality;
+  quality_note: string;
+  audio_mode: AudioMode;
+  has_audio: boolean;
+  width: number | null;
+  height: number | null;
+  provider: string;
+  model: string;
+  gpu: string | null;
+  total_render_seconds: number;
+  total_wall_seconds: number;
+  chunk_count: number;
+  estimated_cost_usd: number | null;
+  estimated_cost_per_output_minute_usd: number | null;
+  cost_note: string;
+  planner_source: string;
+  planner_note: string | null;
+  continuity_id: string;
+  youtube_video_id: string | null;
+  youtube_url: string | null;
+  youtube_privacy: YouTubePrivacy | null;
+}
+
+export interface BillingPack {
+  id: string;
+  label: string;
+  credit_seconds: number;
+  available: boolean;
+}
+
+export interface BillingCatalogResponse {
+  enabled: boolean;
+  enforce_credits: boolean;
+  packs: BillingPack[];
+}
+
+export interface BillingMeResponse {
+  workspace_id: string;
+  enabled: boolean;
+  enforce_credits: boolean;
+  balance_seconds: number;
+  email: string | null;
+  stripe_customer_id: string | null;
+}
+
+export interface CheckoutStatusResponse {
+  session_id: string;
+  paid: boolean;
+  balance_seconds: number;
+}
+
+export interface YouTubeStatusResponse {
+  enabled: boolean;
+  connected: boolean;
+  channel_id: string | null;
+  channel_title: string | null;
+  public_uploads_allowed: boolean;
+}
+
+export interface YouTubePublishResponse {
+  video_id: string;
+  youtube_url: string;
+  privacy: YouTubePrivacy;
+  title: string;
 }

@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "storage"
 JOBS_DB = STORAGE / "jobs" / "jobs.sqlite3"
+BILLING_DB = STORAGE / "billing" / "billing.sqlite3"
+INTEGRATIONS_DB = STORAGE / "integrations" / "integrations.sqlite3"
 METRICS = STORAGE / "metrics"
 BACKUPS = STORAGE / "backups"
 ENV_PATH = ROOT / ".env"
@@ -43,9 +45,16 @@ def main() -> int:
     target.mkdir(parents=True, exist_ok=False)
 
     backed_up = 0
-    if JOBS_DB.exists():
-        destination = target / "jobs.sqlite3"
-        source_conn = sqlite3.connect(f"file:{JOBS_DB}?mode=ro", uri=True)
+    databases = [
+        (JOBS_DB, "jobs.sqlite3"),
+        (BILLING_DB, "billing.sqlite3"),
+        (INTEGRATIONS_DB, "integrations.sqlite3"),
+    ]
+    for source, name in databases:
+        if not source.exists():
+            continue
+        destination = target / name
+        source_conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
         dest_conn = sqlite3.connect(destination)
         try:
             source_conn.backup(dest_conn)
