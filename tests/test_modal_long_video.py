@@ -30,6 +30,7 @@ class ModalLongVideoTests(unittest.TestCase):
         self.assertIn("--chunk-carry-frames", command)
         self.assertNotIn("--chunk-blend-frames", command)
         self.assertGreater(ltx_worker.temporal_chunk_count(30), 1)
+        self.assertEqual(ltx_worker.LONG_VIDEO_PIXEL_FRAMES, 97)
 
     def test_short_clip_remains_single_window(self):
         command = ltx_worker.build_command(

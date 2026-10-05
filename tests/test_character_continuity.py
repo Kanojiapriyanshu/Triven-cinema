@@ -3,6 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 
+from app.schemas.generation import EntityLock
 from app.services.continuity_service import compose_continuity_prompt, safe_continuity_id
 from app.services.scene_planner import create_scene_plan
 
@@ -64,6 +65,27 @@ class CharacterContinuityTests(unittest.TestCase):
         self.assertEqual(command[image_index + 1], "/tmp/previous.png")
         self.assertEqual(command[image_index + 2], "0")
         self.assertEqual(command[image_index + 3], "0.950")
+        self.assertEqual(command[image_index + 4], "0")
+
+
+    def test_reference_prompt_treats_existing_character_as_single_instance(self):
+        prompt = compose_continuity_prompt(
+            scene_prompt="Leo extends his hand toward the fox.",
+            character_bible="LEO has short brown hair and a blue jacket. FOX has red fur.",
+            style_bible="Cinematic feature animation.",
+            scene_index=1,
+            scene_count=2,
+            entity_locks=[
+                EntityLock(label="LEO", expected_count=1, description="main adventurer"),
+                EntityLock(label="FOX", expected_count=1, description="red fox companion"),
+            ],
+            visible_entity_counts={"LEO": 1, "FOX": 1},
+            reference_frame_present=True,
+        )
+        self.assertIn("THIS SHOT MUST SHOW EXACTLY: LEO=1, FOX=1", prompt)
+        self.assertIn("one and only canonical physical instance", prompt)
+        self.assertIn("DO NOT introduce, recreate, re-enter, spawn, mirror or clone", prompt)
+        self.assertIn("Never create duplicate copies", prompt)
 
     def test_continuity_id_is_filename_safe(self):
         self.assertEqual(safe_continuity_id("../../story / demo"), "story-demo")
@@ -74,7 +96,7 @@ class CharacterContinuityTests(unittest.TestCase):
         self.assertNotIn("seed: seed +", page)
         self.assertNotIn("seed=request.seed +", routes)
         self.assertIn("reference_frame_filename", page)
-        self.assertIn("extract_last_frame", routes)
+        self.assertIn("extract_continuity_frame", routes)
 
 
 if __name__ == "__main__":

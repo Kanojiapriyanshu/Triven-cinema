@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     max_4k_scene_seconds: float = 15.0
     max_factory_duration_seconds: int = 300
 
+    # Continuity/cardinality guard. "auto" requests use this visual QC gate when
+    # Gemini is configured; QC failures can trigger a bounded regeneration before
+    # a scene is accepted into the factory timeline.
+    continuity_vision_qc_enabled: bool = True
+    continuity_qc_timeout_seconds: float = 12.0
+    continuity_qc_max_frames: int = 3
+
     # Workspace/session signing. Required when billing or YouTube integrations
     # are enabled in production. Never commit the production value.
     triven_secret_key: str = ""

@@ -294,3 +294,7 @@ The demo production domain is currently pinned to **https://devansh.info**. Host
 ## AI video factory / billing / YouTube
 
 See `docs/AI_VIDEO_FACTORY.md` for the long-form LTX profile, audio pipeline, Stripe customer-payment flow, connected YouTube publishing, and Hostinger deployment instructions.
+
+## Continuity & cardinality engine
+
+Strict story continuity now combines character/style bibles, physical entity-count locks, lossless first-frame conditioning, stable near-end anchor selection, long-shot temporal carry, vision QC and bounded auto-regeneration. See `docs/CONTINUITY_ENGINE.md` for the production behavior and failure-handling rules.

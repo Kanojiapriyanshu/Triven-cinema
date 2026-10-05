@@ -6,6 +6,8 @@ from app.schemas.generation import (
     AspectRatio,
     AudioMode,
     ContinuityMode,
+    ContinuityQCMode,
+    EntityLock,
     DecoderName,
     RenderQuality,
     VideoModelName,
@@ -27,7 +29,9 @@ class FactoryGenerationRequest(BaseModel):
     decoder: DecoderName = "conv"
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
     continuity_mode: ContinuityMode = "strict"
-    continuity_strength: float = Field(default=0.95, ge=0.0, le=1.0)
+    continuity_strength: float = Field(default=1.0, ge=0.0, le=1.0)
+    continuity_qc_mode: ContinuityQCMode = "auto"
+    continuity_max_retries: int = Field(default=1, ge=0, le=2)
     enhance_prompt: bool = False
 
     publish_to_youtube: bool = False
@@ -75,6 +79,10 @@ class FactoryGenerationResponse(BaseModel):
     planner_source: str
     planner_note: str | None = None
     continuity_id: str
+    entity_locks: list[EntityLock] = Field(default_factory=list)
+    continuity_qc_passed: bool | None = None
+    continuity_regenerations: int = 0
+    continuity_warnings: list[str] = Field(default_factory=list)
     youtube_video_id: str | None = None
     youtube_url: str | None = None
     youtube_privacy: Literal["private", "unlisted", "public"] | None = None

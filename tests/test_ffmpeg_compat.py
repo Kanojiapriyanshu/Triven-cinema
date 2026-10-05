@@ -3,7 +3,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services.video_combiner import extract_last_frame
+from app.services.video_combiner import extract_continuity_frame, extract_last_frame
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class FFmpegCompatibilityTests(unittest.TestCase):
@@ -13,11 +16,11 @@ class FFmpegCompatibilityTests(unittest.TestCase):
             input_path = root / "scene.mp4"
             output_path = root / "continuity.png"
             input_path.write_bytes(b"video")
-            captured: dict[str, list[str]] = {}
+            commands: list[list[str]] = []
 
             def fake_run(command: list[str]) -> None:
-                captured["command"] = command
-                output_path.write_bytes(b"png")
+                commands.append(command)
+                Path(command[-1]).write_bytes(b"png" + bytes([len(commands)]))
 
             with patch(
                 "app.services.video_combiner._run_ffmpeg",
@@ -26,8 +29,19 @@ class FFmpegCompatibilityTests(unittest.TestCase):
                 result = extract_last_frame(input_path, output_path)
 
             self.assertEqual(result, output_path)
-            self.assertNotIn("-vsync", captured["command"])
-            self.assertEqual(captured["command"][-1], str(output_path))
+            self.assertTrue(commands)
+            for command in commands:
+                self.assertNotIn("-vsync", command)
+                self.assertEqual(command[-2], "1")
+
+    def test_continuity_extractor_samples_multiple_near_end_frames(self):
+        source = (ROOT / "services/api/app/services/video_combiner.py").read_text()
+        self.assertNotIn('"-vsync"', source)
+        self.assertIn("def extract_continuity_frame", source)
+        self.assertIn("0.35, 0.20, 0.08", source)
+
+    def test_continuity_frame_function_is_publicly_callable(self):
+        self.assertTrue(callable(extract_continuity_frame))
 
 
 if __name__ == "__main__":

@@ -25,12 +25,13 @@ def frames_for_duration(duration_seconds: float, fps: int = 24) -> int:
 
 
 # LTX-2.5 Distilled supports native temporal windowing for long video.
-# 241 pixel frames ~= 10 seconds at 24fps and stays on the required 8k+1 grid.
-# A 25-frame carry overlaps adjacent windows so visual motion and the jointly
-# generated audio remain continuous instead of hard-cutting every 10s. Current
-# upstream LTX-2 exposes --chunk-pixel-frames and --chunk-carry-frames.
-LONG_VIDEO_PIXEL_FRAMES = 241
+# Use LTX upstream's conservative 97-pixel-frame window with 25-frame carry.
+# Shorter windows reduce long-shot subject drift/cardinality errors while the
+# carry overlap keeps motion/audio continuity inside one native LTX invocation.
+# Both values stay on the required causal frame grid.
+LONG_VIDEO_PIXEL_FRAMES = 97
 LONG_VIDEO_CARRY_FRAMES = 25
+LONG_VIDEO_MIN_DURATION_SECONDS = 10.0
 
 
 def temporal_chunk_count(
@@ -40,9 +41,12 @@ def temporal_chunk_count(
     pixel_frames: int = LONG_VIDEO_PIXEL_FRAMES,
     carry_frames: int = LONG_VIDEO_CARRY_FRAMES,
 ) -> int:
-    total_frames = frames_for_duration(duration_seconds, fps=fps)
-    if total_frames <= pixel_frames:
+    # Keep normal short shots in a single native window. The explicit chunk
+    # controls are reserved for genuinely long clips, where drift/cardinality
+    # pressure is higher and temporal carry becomes useful.
+    if duration_seconds <= LONG_VIDEO_MIN_DURATION_SECONDS:
         return 1
+    total_frames = frames_for_duration(duration_seconds, fps=fps)
     stride = pixel_frames - carry_frames
     if stride <= 0:
         raise ValueError("Temporal chunk carry must be smaller than the chunk window.")
@@ -104,7 +108,7 @@ def build_command(
     # For >10s clips use LTX's own temporal windowing inside one inference
     # invocation. This keeps the multimodal latent/audio context in one pipeline
     # run and lets LTX blend the overlap between windows.
-    if num_frames > LONG_VIDEO_PIXEL_FRAMES:
+    if duration_seconds > LONG_VIDEO_MIN_DURATION_SECONDS:
         command.extend(
             [
                 "--chunk-pixel-frames",
@@ -125,6 +129,7 @@ def build_command(
             str(reference_image_path),
             "0",
             f"{strength:.3f}",
+            "0",  # lossless continuity anchor; avoids needless SDR recompression drift
         ])
 
     return command

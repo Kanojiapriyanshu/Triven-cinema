@@ -25,27 +25,83 @@ def _run_ffmpeg(command: list[str]) -> None:
         raise VideoCombineError("FFmpeg failed:\n" + process.stderr[-5000:])
 
 
-def extract_last_frame(input_path: Path, output_path: Path) -> Path:
-    """Extract the final decoded frame as a PNG for continuation conditioning."""
+def _extract_png(input_path: Path, output_path: Path, *, seek_seconds: float | None = None, end_offset: float | None = None) -> Path:
     if not input_path.exists():
         raise VideoCombineError(f"Input video does not exist: {input_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        "ffmpeg",
-        "-y",
-        "-sseof",
-        "-0.08",
-        "-i",
-        str(input_path),
-        "-frames:v",
-        "1",
-        str(output_path),
-    ]
+    command = ["ffmpeg", "-y"]
+    if end_offset is not None:
+        command.extend(["-sseof", f"-{max(0.01, float(end_offset)):.3f}"])
+    elif seek_seconds is not None:
+        command.extend(["-ss", f"{max(0.0, float(seek_seconds)):.3f}"])
+    command.extend(["-i", str(input_path), "-frames:v", "1", str(output_path)])
     _run_ffmpeg(command)
     if not output_path.exists() or output_path.stat().st_size == 0:
-        raise VideoCombineError("FFmpeg did not produce a continuity frame.")
+        raise VideoCombineError("FFmpeg did not produce a continuity/QC frame.")
     return output_path
+
+
+def extract_continuity_frame(input_path: Path, output_path: Path) -> Path:
+    """Extract a stable near-end frame for the next scene's first-frame anchor.
+
+    The literal final frame is often motion-blurred, half-occluded, or already in a
+    transition. We sample a few near-end candidates and keep the richest lossless
+    PNG as a lightweight sharpness/detail proxy. This also avoids deprecated
+    ``-vsync`` so FFmpeg 7/8/9 all work.
+    """
+    candidates: list[Path] = []
+    try:
+        for index, offset in enumerate((0.35, 0.20, 0.08)):
+            candidate = output_path.with_name(f".{output_path.stem}-candidate-{index}.png")
+            try:
+                _extract_png(input_path, candidate, end_offset=offset)
+                candidates.append(candidate)
+            except VideoCombineError:
+                candidate.unlink(missing_ok=True)
+
+        if not candidates:
+            raise VideoCombineError("Unable to extract a usable continuity frame.")
+
+        # Lossless PNG size is a cheap cross-platform proxy for retained image
+        # detail. It is intentionally only used to choose among frames within the
+        # final 350 ms, so temporal continuity remains intact.
+        best = max(candidates, key=lambda path: path.stat().st_size)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        best.replace(output_path)
+        return output_path
+    finally:
+        for candidate in candidates:
+            if candidate != output_path:
+                candidate.unlink(missing_ok=True)
+
+
+def extract_last_frame(input_path: Path, output_path: Path) -> Path:
+    """Backward-compatible alias for the stable continuity-anchor extractor."""
+    return extract_continuity_frame(input_path, output_path)
+
+
+def extract_qc_frames(
+    input_path: Path,
+    output_dir: Path,
+    *,
+    prefix: str = "qc",
+    positions: tuple[float, ...] = (0.22, 0.52, 0.82),
+) -> list[Path]:
+    """Sample representative frames for continuity/cardinality QC."""
+    info = probe_media(input_path)
+    duration = max(0.1, float(info.get("duration_seconds") or 0.1))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames: list[Path] = []
+    for index, position in enumerate(positions):
+        timestamp = min(max(0.0, duration * position), max(0.0, duration - 0.04))
+        output = output_dir / f".{prefix}-{index}.png"
+        try:
+            _extract_png(input_path, output, seek_seconds=timestamp)
+            frames.append(output)
+        except VideoCombineError:
+            output.unlink(missing_ok=True)
+    return frames
 
 
 def delivery_dimensions(aspect_ratio: str, quality: str = "1080p") -> tuple[int, int]:

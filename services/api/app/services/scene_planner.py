@@ -6,12 +6,19 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.config import settings
-from app.schemas.generation import Scene
+from app.schemas.generation import EntityLock, Scene
 from app.services.continuity_service import (
     compose_continuity_prompt,
+    infer_local_entity_locks,
     local_character_bible,
     local_style_bible,
 )
+
+
+class EntityLockDraft(BaseModel):
+    label: str = Field(min_length=1, max_length=64)
+    expected_count: int = Field(default=1, ge=1, le=8)
+    description: str = Field(default="", max_length=1200)
 
 
 class SceneDraft(BaseModel):
@@ -27,9 +34,11 @@ class SceneDraft(BaseModel):
         le=30,
         description="Recommended duration of the scene.",
     )
+    visible_entity_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ScenePlannerOutput(BaseModel):
+    entity_locks: list[EntityLockDraft] = Field(default_factory=list, max_length=12)
     character_bible: str = Field(
         min_length=20,
         max_length=2400,
@@ -49,6 +58,7 @@ class ScenePlanResult:
     source: str
     character_bible: str
     style_bible: str
+    entity_locks: list[EntityLock]
     note: str | None = None
 
 
@@ -61,6 +71,7 @@ def _locked_scenes(
     *,
     character_bible: str,
     style_bible: str,
+    entity_locks: list[EntityLock],
 ) -> list[Scene]:
     count = len(scenes)
     return [
@@ -73,8 +84,11 @@ def _locked_scenes(
                 style_bible=style_bible,
                 scene_index=index,
                 scene_count=count,
+                entity_locks=entity_locks,
+                visible_entity_counts=scene.visible_entity_counts,
             ),
             duration_seconds=scene.duration_seconds,
+            visible_entity_counts=scene.visible_entity_counts,
         )
         for index, scene in enumerate(scenes)
     ]
@@ -84,11 +98,12 @@ def _local_storyboard(
     prompt: str,
     scene_count: int,
     target_duration_seconds: int = 5,
-) -> tuple[list[Scene], str, str]:
+) -> tuple[list[Scene], str, str, list[EntityLock]]:
     """Fast deterministic fallback that never blocks the render pipeline."""
     base = _compact(prompt)
     character_bible = local_character_bible(base)
     style_bible = local_style_bible(base)
+    entity_locks = infer_local_entity_locks(base)
     scenes: list[Scene] = []
 
     shot_guidance = [
@@ -159,6 +174,7 @@ def _local_storyboard(
                 title=f"{title} {index + 1}",
                 prompt=scene_prompt,
                 duration_seconds=max(3, min(30, int(target_duration_seconds))),
+                visible_entity_counts={},
             )
         )
 
@@ -167,9 +183,11 @@ def _local_storyboard(
             scenes,
             character_bible=character_bible,
             style_bible=style_bible,
+            entity_locks=entity_locks,
         ),
         character_bible,
         style_bible,
+        entity_locks,
     )
 
 
@@ -192,7 +210,7 @@ def _gemini_storyboard(
     scene_count: int,
     aspect_ratio: str,
     target_duration_seconds: int = 5,
-) -> tuple[list[Scene], str, str]:
+) -> tuple[list[Scene], str, str, list[EntityLock]]:
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
@@ -211,16 +229,25 @@ TARGET ASPECT RATIO:
 
 Return ONLY valid JSON with this exact top-level shape:
 {{
+  "entity_locks": [{{"label": "ADVENTURER", "expected_count": 1, "description": "canonical recurring subject"}}],
   "character_bible": "one explicit immutable description of every recurring human/creature",
   "style_bible": "one explicit immutable visual/style description shared by the whole film",
   "scenes": [
     {{
       "title": "short title",
       "prompt": "scene-specific generation-ready video prompt",
-      "duration_seconds": 5
+      "duration_seconds": 5,
+      "visible_entity_counts": {{"ADVENTURER": 1}}
     }}
   ]
 }}
+
+ENTITY/CARDINALITY RULES:
+- Create one stable UPPERCASE label for every recurring physical subject.
+- expected_count is the canonical number of physical instances allowed in the story; default to 1 unless the user explicitly requests multiples.
+- Every scene must include visible_entity_counts for recurring entities that are actually visible in that shot. Use 0 only when the entity is intentionally absent.
+- Never increase a visible count just because a character is named again. A recurring subject already on screen is the same physical instance.
+- Do not treat shadows or reflections as additional physical instances.
 
 CHARACTER BIBLE RULES:
 - Write the recurring subject identity ONCE, with stable labels such as ADVENTURER and FOX when relevant.
@@ -240,6 +267,8 @@ STYLE BIBLE RULES:
 SCENE RULES:
 - Return exactly {scene_count} scenes.
 - Each scene is one continuous shot and should progress the story rather than restating the full story.
+- For scene 2 onward, write the action as a continuation of the existing recurring subjects, not as a new introduction or re-entry, unless the story explicitly introduces a new entity at that moment.
+- Never use wording that can imply a second copy such as "another ADVENTURER", "a new FOX", or re-describing the same subject as if it just appeared.
 - Refer to recurring subjects using the exact labels established by the character bible.
 - Do NOT invent a different face, hair, wardrobe, body build, companion design or color palette per scene.
 - Describe only the scene-specific action, environment state, framing, camera movement, expression and lighting change.
@@ -302,12 +331,21 @@ SCENE RULES:
 
     character_bible = _compact(parsed.character_bible)[:2400]
     style_bible = _compact(parsed.style_bible)[:1800]
+    entity_locks = [
+        EntityLock(
+            label=_compact(lock.label).upper()[:64],
+            expected_count=lock.expected_count,
+            description=_compact(lock.description)[:1200],
+        )
+        for lock in parsed.entity_locks
+    ]
     scenes = [
         Scene(
             id=index + 1,
             title=_compact(scene.title)[:120] or f"Scene {index + 1}",
             prompt=_compact(scene.prompt),
             duration_seconds=scene.duration_seconds,
+            visible_entity_counts={str(k).upper(): max(0, min(8, int(v))) for k, v in scene.visible_entity_counts.items()},
         )
         for index, scene in enumerate(parsed.scenes)
     ]
@@ -316,9 +354,11 @@ SCENE RULES:
             scenes,
             character_bible=character_bible,
             style_bible=style_bible,
+            entity_locks=entity_locks,
         ),
         character_bible,
         style_bible,
+        entity_locks,
     )
 
 
@@ -337,7 +377,7 @@ def create_scene_plan(
     # for prompt enhancement. Identity/style locks are still created locally so
     # the same API contract works for one- and multi-scene storyboards.
     if scene_count == 1 and not force_ai:
-        scenes, character_bible, style_bible = _local_storyboard(
+        scenes, character_bible, style_bible, entity_locks = _local_storyboard(
             clean_prompt, 1, target_duration_seconds=target_duration
         )
         return ScenePlanResult(
@@ -345,11 +385,12 @@ def create_scene_plan(
             source="direct",
             character_bible=character_bible,
             style_bible=style_bible,
+            entity_locks=entity_locks,
             note="Single-scene storyboard created locally without spending a Gemini request.",
         )
 
     try:
-        scenes, character_bible, style_bible = _gemini_storyboard(
+        scenes, character_bible, style_bible, entity_locks = _gemini_storyboard(
             clean_prompt,
             scene_count,
             aspect_ratio,
@@ -360,10 +401,11 @@ def create_scene_plan(
             source="gemini",
             character_bible=character_bible,
             style_bible=style_bible,
-            note="Storyboard generated by Gemini with shared character and style locks.",
+            entity_locks=entity_locks,
+            note="Storyboard generated by Gemini with shared identity, entity-count and style locks.",
         )
     except Exception as exc:  # reliability boundary: rendering must remain usable
-        scenes, character_bible, style_bible = _local_storyboard(
+        scenes, character_bible, style_bible, entity_locks = _local_storyboard(
             clean_prompt, scene_count, target_duration_seconds=target_duration
         )
         return ScenePlanResult(
@@ -371,5 +413,6 @@ def create_scene_plan(
             source="fallback",
             character_bible=character_bible,
             style_bible=style_bible,
+            entity_locks=entity_locks,
             note=f"{str(exc)} Triven created an editable continuity-locked local storyboard instead.",
         )

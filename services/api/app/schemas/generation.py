@@ -10,6 +10,7 @@ VideoProviderName = Literal["huggingface", "modal"]
 VideoModelName = Literal["ltx-2.5", "wan", "minimax"]
 DecoderName = Literal["conv", "diffusion"]
 ContinuityMode = Literal["off", "balanced", "strict"]
+ContinuityQCMode = Literal["off", "auto", "strict"]
 JobStatusName = Literal["queued", "running", "completed", "failed"]
 JobStageName = Literal[
     "queued",
@@ -39,11 +40,20 @@ class ScenePlanRequest(BaseModel):
     scene_count: int = Field(default=4, ge=1, le=20)
 
 
+class EntityLock(BaseModel):
+    label: str = Field(..., min_length=1, max_length=64)
+    expected_count: int = Field(default=1, ge=1, le=8)
+    description: str = Field(default="", max_length=1200)
+
+
 class Scene(BaseModel):
     id: int
     title: str
     prompt: str
     duration_seconds: int
+    # Exact subject counts for this shot when the planner knows them. Empty means
+    # "use the global maximum locks but do not force every entity to be visible".
+    visible_entity_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ScenePlanResponse(BaseModel):
@@ -56,6 +66,7 @@ class ScenePlanResponse(BaseModel):
     continuity_id: str
     character_bible: str
     style_bible: str
+    entity_locks: list[EntityLock] = Field(default_factory=list)
 
 
 class VideoGenerationRequest(BaseModel):
@@ -80,8 +91,12 @@ class VideoGenerationRequest(BaseModel):
     scene_count: int | None = Field(default=None, ge=1, le=50)
     character_bible: str | None = Field(default=None, max_length=3000)
     style_bible: str | None = Field(default=None, max_length=3000)
+    entity_locks: list[EntityLock] = Field(default_factory=list, max_length=12)
+    visible_entity_counts: dict[str, int] = Field(default_factory=dict)
+    continuity_qc_mode: ContinuityQCMode = "auto"
+    continuity_max_retries: int = Field(default=1, ge=0, le=2)
     reference_frame_filename: str | None = Field(default=None, max_length=255)
-    continuity_strength: float = Field(default=0.95, ge=0.0, le=1.0)
+    continuity_strength: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class MediaInfo(BaseModel):
@@ -120,11 +135,15 @@ class VideoGenerationResponse(BaseModel):
     reference_frame_filename: str | None = None
     continuity_frame_url: str | None = None
     continuity_frame_filename: str | None = None
+    continuity_qc_passed: bool | None = None
+    continuity_regenerations: int = 0
+    continuity_warnings: list[str] = Field(default_factory=list)
 
 
 class FullVideoScene(BaseModel):
     id: int
     prompt: str = Field(..., min_length=10, max_length=8000)
+    visible_entity_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class FullVideoGenerationRequest(BaseModel):
@@ -143,7 +162,10 @@ class FullVideoGenerationRequest(BaseModel):
     continuity_id: str | None = Field(default=None, max_length=96)
     character_bible: str | None = Field(default=None, max_length=3000)
     style_bible: str | None = Field(default=None, max_length=3000)
-    continuity_strength: float = Field(default=0.95, ge=0.0, le=1.0)
+    entity_locks: list[EntityLock] = Field(default_factory=list, max_length=12)
+    continuity_qc_mode: ContinuityQCMode = "auto"
+    continuity_max_retries: int = Field(default=1, ge=0, le=2)
+    continuity_strength: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class FullVideoGenerationResponse(BaseModel):
@@ -193,6 +215,8 @@ class GenerationCapabilitiesResponse(BaseModel):
     continuity_modes: list[ContinuityMode]
     audio_modes: list[AudioMode]
     image_conditioning: bool
+    entity_count_lock: bool = True
+    continuity_vision_qc: bool = True
     max_scene_duration_seconds: float
     max_scene_duration_seconds_by_quality: dict[str, float]
     native_chunk_seconds: float

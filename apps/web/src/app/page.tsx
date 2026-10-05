@@ -261,7 +261,9 @@ export default function Home() {
         decoder,
         seed,
         continuity_mode: continuityMode,
-        continuity_strength: 0.95,
+        continuity_strength: 1.0,
+        continuity_qc_mode: "auto",
+        continuity_max_retries: 1,
         enhance_prompt: enhancePrompt,
         publish_to_youtube: publishToYouTube,
         youtube_title: youtubeTitle.trim() || null,
@@ -372,8 +374,12 @@ export default function Home() {
       scene_count: result.scenes.length,
       character_bible: result.character_bible,
       style_bible: result.style_bible,
+      entity_locks: result.entity_locks,
+      visible_entity_counts: result.scenes[Math.max(sceneIndex, 0)]?.visible_entity_counts || {},
+      continuity_qc_mode: "auto",
+      continuity_max_retries: 1,
       reference_frame_filename: continuityMode === "strict" ? referenceFrameFilename : null,
-      continuity_strength: 0.95,
+      continuity_strength: 1.0,
     });
     return {
       url: absoluteApiUrl(response.video_url),
@@ -394,6 +400,9 @@ export default function Home() {
       referenceFrameFilename: response.reference_frame_filename,
       continuityFrameUrl: response.continuity_frame_url ? absoluteApiUrl(response.continuity_frame_url) : null,
       continuityFrameFilename: response.continuity_frame_filename,
+      continuityQcPassed: response.continuity_qc_passed,
+      continuityRegenerations: response.continuity_regenerations,
+      continuityWarnings: response.continuity_warnings,
     };
   }
 
@@ -692,7 +701,8 @@ export default function Home() {
               <InfoRow label="4K scene" value={`${capabilities?.max_scene_duration_seconds_by_quality?.["4k"] ?? 15}s`} />
               <InfoRow label="Factory runtime" value={`${capabilities?.max_factory_duration_seconds ?? 300}s`} />
               <InfoRow label="Audio" value="Native / mastered / mute" />
-              <InfoRow label="Continuity" value="Identity + previous frame" />
+              <InfoRow label="Continuity" value="Identity + entity count + anchor frame" />
+              <InfoRow label="Duplicate guard" value={capabilities?.continuity_vision_qc ? "Vision QC + auto retry" : "Prompt/cardinality lock"} />
             </IntegrationCard>
 
             <IntegrationCard title="Customer billing" subtitle={billingCatalog?.enabled ? "Stripe Checkout credits" : "Feature-gated until Stripe is configured"}>
@@ -731,11 +741,12 @@ export default function Home() {
         )}
 
         {factoryResult && (
-          <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <Stat label="Scenes" value={String(factoryResult.scene_count)} detail={`${factoryResult.chunk_count} native LTX chunks`} />
             <Stat label="Runtime" value={`${(factoryResult.actual_duration_seconds ?? factoryResult.target_duration_seconds).toFixed(1)}s`} detail={`${factoryResult.scene_duration_seconds}s target scene`} />
             <Stat label="Delivery" value={qualityLabel(factoryResult.quality)} detail={`${factoryResult.width ?? "?"}×${factoryResult.height ?? "?"} · ${factoryResult.audio_mode}`} />
-            <Stat label="Planner" value={factoryResult.planner_source} detail={factoryResult.youtube_url ? "Published to YouTube" : "Master ready"} />
+            <Stat label="Planner" value={factoryResult.planner_source} detail={`${factoryResult.entity_locks.length} entity lock${factoryResult.entity_locks.length === 1 ? "" : "s"}`} />
+            <Stat label="Continuity QC" value={factoryResult.continuity_qc_passed === true ? "Passed" : factoryResult.continuity_qc_passed === false ? "Warning" : "Guarded"} detail={`${factoryResult.continuity_regenerations} auto-regeneration${factoryResult.continuity_regenerations === 1 ? "" : "s"}`} />
           </section>
         )}
 
@@ -775,7 +786,7 @@ export default function Home() {
                       {isEditing ? (
                         <textarea value={scenePrompts[scene.id] || ""} onChange={(e) => updateScenePrompt(scene.id, e.target.value)} rows={8} className="mt-5 w-full resize-none rounded-xl border border-white/[0.08] bg-[#090a0b] p-4 text-sm leading-6 text-zinc-300 outline-none" />
                       ) : <p className="mt-5 line-clamp-6 text-sm leading-6 text-zinc-500">{scenePrompts[scene.id]}</p>}
-                      {video && <div className="mt-4 rounded-xl bg-white/[0.025] px-3 py-2 text-[11px] leading-5 text-zinc-600">{video.details} · {video.chunkCount} chunk{video.chunkCount === 1 ? "" : "s"} · {video.renderSeconds.toFixed(1)}s render · {video.mediaInfo.has_audio ? `audio ${video.mediaInfo.audio_codec || "present"}` : "no audio"}{video.continuityMode === "strict" ? video.continuityApplied ? " · conditioned" : " · anchor" : ""}</div>}
+                      {video && <div className="mt-4 rounded-xl bg-white/[0.025] px-3 py-2 text-[11px] leading-5 text-zinc-600">{video.details} · {video.chunkCount} chunk{video.chunkCount === 1 ? "" : "s"} · {video.renderSeconds.toFixed(1)}s render · {video.mediaInfo.has_audio ? `audio ${video.mediaInfo.audio_codec || "present"}` : "no audio"}{video.continuityMode === "strict" ? video.continuityApplied ? " · conditioned" : " · anchor" : ""}{video.continuityQcPassed === true ? " · QC passed" : video.continuityQcPassed === false ? " · QC warning" : ""}{video.continuityRegenerations ? ` · ${video.continuityRegenerations} auto-retry` : ""}</div>}
                       <div className="mt-5 flex items-center justify-between gap-3 border-t border-white/[0.06] pt-4">
                         <button type="button" disabled={isBusy && !isEditing} onClick={() => setEditingScene(isEditing ? null : scene.id)} className="h-9 rounded-lg px-3 text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40">{isEditing ? "Done editing" : "Edit prompt"}</button>
                         <div className="flex items-center gap-2">

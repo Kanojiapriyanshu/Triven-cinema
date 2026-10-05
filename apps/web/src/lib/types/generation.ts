@@ -5,6 +5,7 @@ export type VideoProviderName = "huggingface" | "modal";
 export type VideoModelName = "ltx-2.5" | "wan" | "minimax";
 export type DecoderName = "conv" | "diffusion";
 export type ContinuityMode = "off" | "balanced" | "strict";
+export type ContinuityQCMode = "off" | "auto" | "strict";
 export type GenerationMode = "factory" | "storyboard" | "direct";
 export type YouTubePrivacy = "private" | "unlisted" | "public";
 export type JobStatusName = "queued" | "running" | "completed" | "failed";
@@ -28,11 +29,18 @@ export interface PlanQualityReport {
   note: string;
 }
 
+export interface EntityLock {
+  label: string;
+  expected_count: number;
+  description: string;
+}
+
 export interface Scene {
   id: number;
   title: string;
   prompt: string;
   duration_seconds: number;
+  visible_entity_counts: Record<string, number>;
 }
 
 export interface ScenePlanRequest {
@@ -51,6 +59,7 @@ export interface ScenePlanResponse {
   continuity_id: string;
   character_bible: string;
   style_bible: string;
+  entity_locks: EntityLock[];
 }
 
 export interface VideoGenerationRequest {
@@ -71,6 +80,10 @@ export interface VideoGenerationRequest {
   scene_count?: number | null;
   character_bible?: string | null;
   style_bible?: string | null;
+  entity_locks?: EntityLock[];
+  visible_entity_counts?: Record<string, number>;
+  continuity_qc_mode?: ContinuityQCMode;
+  continuity_max_retries?: number;
   reference_frame_filename?: string | null;
   continuity_strength?: number;
 }
@@ -111,11 +124,15 @@ export interface VideoGenerationResponse {
   reference_frame_filename: string | null;
   continuity_frame_url: string | null;
   continuity_frame_filename: string | null;
+  continuity_qc_passed: boolean | null;
+  continuity_regenerations: number;
+  continuity_warnings: string[];
 }
 
 export interface FullVideoScene {
   id: number;
   prompt: string;
+  visible_entity_counts?: Record<string, number>;
 }
 
 export interface FullVideoGenerationRequest {
@@ -134,6 +151,9 @@ export interface FullVideoGenerationRequest {
   continuity_id?: string | null;
   character_bible?: string | null;
   style_bible?: string | null;
+  entity_locks?: EntityLock[];
+  continuity_qc_mode?: ContinuityQCMode;
+  continuity_max_retries?: number;
   continuity_strength?: number;
 }
 
@@ -197,6 +217,8 @@ export interface GenerationCapabilitiesResponse {
   continuity_modes: ContinuityMode[];
   audio_modes: AudioMode[];
   image_conditioning: boolean;
+  entity_count_lock: boolean;
+  continuity_vision_qc: boolean;
   max_scene_duration_seconds: number;
   max_scene_duration_seconds_by_quality: Record<RenderQuality, number>;
   native_chunk_seconds: number;
@@ -260,6 +282,9 @@ export interface RenderedSceneVideo {
   referenceFrameFilename: string | null;
   continuityFrameUrl: string | null;
   continuityFrameFilename: string | null;
+  continuityQcPassed: boolean | null;
+  continuityRegenerations: number;
+  continuityWarnings: string[];
 }
 
 export interface FactoryGenerationRequest {
@@ -276,6 +301,8 @@ export interface FactoryGenerationRequest {
   seed: number;
   continuity_mode: ContinuityMode;
   continuity_strength: number;
+  continuity_qc_mode?: ContinuityQCMode;
+  continuity_max_retries?: number;
   enhance_prompt: boolean;
   publish_to_youtube: boolean;
   youtube_title?: string | null;
@@ -313,6 +340,10 @@ export interface FactoryGenerationResponse {
   planner_source: string;
   planner_note: string | null;
   continuity_id: string;
+  entity_locks: EntityLock[];
+  continuity_qc_passed: boolean | null;
+  continuity_regenerations: number;
+  continuity_warnings: string[];
   youtube_video_id: string | null;
   youtube_url: string | null;
   youtube_privacy: YouTubePrivacy | null;

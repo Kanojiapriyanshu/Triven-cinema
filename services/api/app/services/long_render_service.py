@@ -40,7 +40,9 @@ def _continuation_prompt(prompt: str, part: int, count: int) -> str:
         f"{prompt}\n\n"
         f"CONTINUATION PART {part + 1} OF {count}: Continue directly from the supplied first frame. "
         "Preserve the exact subject identity, wardrobe, environment, lighting direction, camera logic, "
-        "motion trajectory and synchronized audio world. Do not restart the action or redesign anything."
+        "motion trajectory and synchronized audio world. The recurring subjects already visible in the supplied "
+        "frame are the canonical existing instances: continue them and do not spawn, clone, mirror, re-enter, "
+        "or recreate another copy. Do not restart the action or redesign anything."
     )
 
 

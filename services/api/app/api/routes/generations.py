@@ -29,6 +29,7 @@ from app.services.billing_service import (
     refund_credits,
 )
 from app.services.continuity_service import compose_continuity_prompt, safe_continuity_id
+from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
 from app.services.identity_service import ensure_workspace, workspace_id_from_request
 from app.services.job_service import (
@@ -48,7 +49,7 @@ from app.services.metrics_service import (
 from app.services.prompt_quality import evaluate_plan_prompt_coverage
 from app.services.scene_planner import create_scene_plan
 from app.services.storage_service import ensure_minimum_free_disk, resolve_generated_asset
-from app.services.video_combiner import combine_videos, extract_last_frame
+from app.services.video_combiner import combine_videos, extract_continuity_frame
 from app.services.video_profiles import (
     duration_profile,
     source_render_dimensions,
@@ -120,8 +121,12 @@ def _generate_video_impl(
     provider = get_video_provider(provider_key, model=request.model)
     width, height = source_render_dimensions(request.aspect_ratio)
 
-    prompt_to_render = request.prompt
+    prompt_base = request.prompt
     provider_enhance_prompt = request.enhance_prompt
+    enhanced_entity_locks = request.entity_locks
+    enhanced_visible_counts = request.visible_entity_counts
+    enhanced_character_bible = request.character_bible
+    enhanced_style_bible = request.style_bible
     if request.enhance_prompt and provider_key == "modal":
         enhanced = create_scene_plan(
             prompt=request.prompt,
@@ -129,18 +134,12 @@ def _generate_video_impl(
             aspect_ratio=request.aspect_ratio,
             force_ai=True,
         )
-        prompt_to_render = enhanced.scenes[0].prompt
+        prompt_base = enhanced.scenes[0].prompt
+        enhanced_entity_locks = enhanced.entity_locks or enhanced_entity_locks
+        enhanced_visible_counts = enhanced.scenes[0].visible_entity_counts or enhanced_visible_counts
+        enhanced_character_bible = enhanced.character_bible or enhanced_character_bible
+        enhanced_style_bible = enhanced.style_bible or enhanced_style_bible
         provider_enhance_prompt = False
-
-    if request.continuity_mode != "off":
-        prompt_to_render = compose_continuity_prompt(
-            scene_prompt=prompt_to_render,
-            character_bible=request.character_bible,
-            style_bible=request.style_bible,
-            scene_index=request.scene_index,
-            scene_count=request.scene_count,
-        )
-    prompt_to_render = _audio_prompt(prompt_to_render, request.audio_direction)
 
     reference_path: Path | None = None
     if request.continuity_mode == "strict" and request.reference_frame_filename:
@@ -155,39 +154,111 @@ def _generate_video_impl(
         progress(
             "rendering",
             20,
-            "Rendering with LTX-2.5" + (" using the previous scene frame..." if reference_path else "..."),
+            "Rendering with LTX-2.5" + (" using the canonical previous-scene anchor..." if reference_path else "..."),
         )
 
     def chunk_progress(part: int, count: int, message: str) -> None:
         if progress:
             progress(
                 "rendering",
-                min(78, 20 + int(((part + 1) / max(1, count)) * 58)),
+                min(76, 20 + int(((part + 1) / max(1, count)) * 56)),
                 message,
             )
 
-    result = render_long_clip(
-        provider=provider,
-        prompt=prompt_to_render,
-        width=width,
-        height=height,
-        duration_seconds=request.duration_seconds,
-        seed=request.seed,
-        decoder=request.decoder,
-        enhance_prompt=provider_enhance_prompt,
-        reference_image_path=str(reference_path) if reference_path else None,
-        reference_strength=request.continuity_strength,
-        progress=chunk_progress,
-    )
+    total_render_seconds = 0.0
+    total_wall_seconds = 0.0
+    total_chunks = 0
+    continuity_regenerations = 0
+    continuity_warnings: list[str] = []
+    qc_attempted = False
+    final_qc_passed = True
+    last_qc_note = ""
+    result = None
+    source_path: Path | None = None
 
-    source_path = Path(result.path)
+    for attempt in range(max(0, int(request.continuity_max_retries)) + 1):
+        prompt_to_render = prompt_base
+        if request.continuity_mode != "off":
+            prompt_to_render = compose_continuity_prompt(
+                scene_prompt=prompt_to_render,
+                character_bible=enhanced_character_bible,
+                style_bible=enhanced_style_bible,
+                scene_index=request.scene_index,
+                scene_count=request.scene_count,
+                entity_locks=enhanced_entity_locks,
+                visible_entity_counts=enhanced_visible_counts,
+                reference_frame_present=reference_path is not None,
+                retry_level=attempt,
+                qc_feedback=last_qc_note,
+            )
+        prompt_to_render = _audio_prompt(prompt_to_render, request.audio_direction)
+
+        result = render_long_clip(
+            provider=provider,
+            prompt=prompt_to_render,
+            width=width,
+            height=height,
+            duration_seconds=request.duration_seconds,
+            seed=request.seed,
+            decoder=request.decoder,
+            enhance_prompt=provider_enhance_prompt if attempt == 0 else False,
+            reference_image_path=str(reference_path) if reference_path else None,
+            reference_strength=request.continuity_strength,
+            progress=chunk_progress,
+        )
+        candidate_path = Path(result.path)
+        total_render_seconds += float(result.render_seconds)
+        total_wall_seconds += float(result.wall_seconds or result.render_seconds)
+        total_chunks += int(result.chunk_count or 1)
+
+        qc = None
+        if request.continuity_mode != "off" and request.continuity_qc_mode != "off":
+            if progress:
+                progress("rendering", 78, "Checking entity count and duplicate-subject continuity...")
+            qc = evaluate_scene_cardinality(
+                candidate_path,
+                entity_locks=enhanced_entity_locks,
+                visible_entity_counts=enhanced_visible_counts,
+                character_bible=enhanced_character_bible,
+                scene_prompt=prompt_to_render,
+                qc_mode=request.continuity_qc_mode,
+            )
+            qc_attempted = qc_attempted or not qc.skipped
+            if qc.skipped and request.continuity_qc_mode == "strict":
+                candidate_path.unlink(missing_ok=True)
+                raise RuntimeError(f"Strict continuity QC could not run: {qc.note}")
+            if qc.skipped and qc.note:
+                continuity_warnings.append(qc.note)
+
+        if qc is None or qc.skipped or (qc.passed and not qc.duplicate_detected):
+            source_path = candidate_path
+            break
+
+        last_qc_note = qc.note or "; ".join(qc.violations) or "duplicate/cardinality violation"
+        if attempt < request.continuity_max_retries:
+            continuity_regenerations += 1
+            candidate_path.unlink(missing_ok=True)
+            continue
+
+        final_qc_passed = False
+        message = f"Continuity QC failed after {attempt + 1} attempt(s): {last_qc_note}"
+        if request.continuity_qc_mode == "strict":
+            candidate_path.unlink(missing_ok=True)
+            raise RuntimeError(message)
+        continuity_warnings.append(message)
+        source_path = candidate_path
+        break
+
+    if result is None or source_path is None:
+        raise RuntimeError("Video render did not produce an accepted scene.")
+
     continuity_frame_path: Path | None = None
     if request.continuity_mode != "off":
         continuity_tag = safe_continuity_id(request.continuity_id or uuid.uuid4().hex[:12])
         continuity_frame_path = GENERATED_DIR / (
             f"continuity-{continuity_tag}-scene-{(request.scene_index or 0) + 1}-{uuid.uuid4().hex[:8]}.png"
         )
-        extract_last_frame(source_path, continuity_frame_path)
+        extract_continuity_frame(source_path, continuity_frame_path)
 
     if progress:
         progress("delivery", 82, f"Preparing {request.quality} delivery and {request.audio_mode} audio...")
@@ -204,7 +275,7 @@ def _generate_video_impl(
         progress("probing", 92, "Validating dimensions, audio and continuity frame...")
 
     media_info = _media_info(delivery_path)
-    wall_seconds = float(result.wall_seconds or result.render_seconds)
+    wall_seconds = total_wall_seconds
     estimated_cost, estimated_cost_per_minute, cost_note = estimate_gpu_cost(
         render_seconds=wall_seconds,
         gpu=result.gpu,
@@ -224,8 +295,8 @@ def _generate_video_impl(
             "delivery_width": media_info.width,
             "delivery_height": media_info.height,
             "duration_seconds": request.duration_seconds,
-            "chunk_count": result.chunk_count,
-            "render_seconds": round(result.render_seconds, 3),
+            "chunk_count": total_chunks,
+            "render_seconds": round(total_render_seconds, 3),
             "wall_seconds": round(wall_seconds, 3),
             "quality": request.quality,
             "audio_mode": request.audio_mode,
@@ -238,6 +309,10 @@ def _generate_video_impl(
             "continuity_applied": result.reference_conditioned,
             "reference_frame_filename": request.reference_frame_filename,
             "continuity_frame_filename": continuity_frame_path.name if continuity_frame_path else None,
+            "entity_lock_count": len(enhanced_entity_locks),
+            "continuity_qc_mode": request.continuity_qc_mode,
+            "continuity_qc_passed": (final_qc_passed if qc_attempted else None),
+            "continuity_regenerations": continuity_regenerations,
             "estimated_cost_usd": estimated_cost,
             "estimated_cost_per_output_minute_usd": estimated_cost_per_minute,
             "filename": filename,
@@ -255,14 +330,14 @@ def _generate_video_impl(
         filename=filename,
         seed=result.seed,
         render_details=result.render_details,
-        render_seconds=round(result.render_seconds, 2),
+        render_seconds=round(total_render_seconds, 2),
         wall_seconds=round(wall_seconds, 2),
         provider=result.provider,
         model=request.model,
         quality=request.quality,
         quality_note=quality_note(request.quality, request.aspect_ratio),
         audio_mode=request.audio_mode,
-        chunk_count=result.chunk_count,
+        chunk_count=total_chunks,
         gpu=result.gpu,
         media_info=media_info,
         estimated_cost_usd=estimated_cost,
@@ -273,6 +348,9 @@ def _generate_video_impl(
         reference_frame_filename=request.reference_frame_filename,
         continuity_frame_url=media_url(continuity_frame_path.name) if continuity_frame_path else None,
         continuity_frame_filename=continuity_frame_path.name if continuity_frame_path else None,
+        continuity_qc_passed=(final_qc_passed if qc_attempted else None),
+        continuity_regenerations=continuity_regenerations,
+        continuity_warnings=continuity_warnings,
     )
 
 
@@ -319,6 +397,8 @@ async def generation_capabilities():
         continuity_modes=["off", "balanced", "strict"],
         audio_modes=["native", "mastered", "mute"],
         image_conditioning=True,
+        entity_count_lock=True,
+        continuity_vision_qc=settings.continuity_vision_qc_enabled,
         max_scene_duration_seconds=max(durations.values()),
         max_scene_duration_seconds_by_quality=durations,
         native_chunk_seconds=settings.ltx_native_chunk_seconds,
@@ -354,6 +434,7 @@ def plan_generation(request: ScenePlanRequest):
             continuity_id=f"story-{uuid.uuid4().hex[:16]}",
             character_bible=plan.character_bible,
             style_bible=plan.style_bible,
+            entity_locks=plan.entity_locks,
         )
     except Exception as exc:
         LOGGER.exception("Scene planning failed")
@@ -520,6 +601,9 @@ def generate_full_video(request: FullVideoGenerationRequest):
                         style_bible=request.style_bible,
                         scene_index=index,
                         scene_count=len(request.scenes),
+                        entity_locks=request.entity_locks,
+                        visible_entity_counts=scene.visible_entity_counts,
+                        reference_frame_present=(request.continuity_mode == "strict" and previous_frame is not None),
                     )
                     if request.continuity_mode != "off"
                     else scene.prompt
@@ -550,7 +634,7 @@ def generate_full_video(request: FullVideoGenerationRequest):
                 gpu = result.gpu or gpu
                 if request.continuity_mode != "off" and index < len(request.scenes) - 1:
                     previous_frame = GENERATED_DIR / f".continuity-full-{uuid.uuid4().hex}.png"
-                    extract_last_frame(clip_path, previous_frame)
+                    extract_continuity_frame(clip_path, previous_frame)
                     continuity_frames.append(previous_frame)
 
             combined_path = GENERATED_DIR / f"final-source-{uuid.uuid4().hex}.mp4"
