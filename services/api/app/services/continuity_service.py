@@ -26,6 +26,65 @@ COMMON_ENTITY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("CAR", ("car", "vehicle", "sports car")),
 )
 
+NON_ENTITY_HEADINGS = {
+    "AUDIO", "AUDIO DESIGN", "CINEMATIC LANGUAGE", "CRITICAL CONTINUITY RULES",
+    "ENVIRONMENT", "FINAL SEQUENCE", "FINAL TITLE CARD", "GENERATION PRIORITY",
+    "MUSIC", "NARRATION", "NARRATION VOICE", "NARRATOR", "NEGATIVE GENERATION RULES",
+    "STORY", "STYLE", "VISUAL STYLE", "CORE VISUAL STYLE", "PASSAGE OF TIME",
+}
+
+
+def _named_entity_labels(prompt: str) -> list[str]:
+    """Extract explicit recurring character names without treating story headings as people."""
+    candidates: list[str] = []
+
+    # Strongest signal: an explicit permanent character identity section.
+    for match in re.finditer(
+        r"(?im)^#{1,5}\s+([A-Z][A-Z0-9 _'-]{1,32}?)\s+[—-]\s+PERMANENT\s+CHARACTER\s+IDENTITY\s*$",
+        prompt,
+    ):
+        candidates.append(match.group(1).strip())
+
+    # Screenplay speaker headings (### RADHA / ### KRISHNA) are also reliable,
+    # while narrative headings like THE QUESTION or FIRST DIALOGUE are not.
+    for match in re.finditer(r"(?m)^#{2,5}\s+([A-Z][A-Z'-]{2,24})\s*$", prompt):
+        candidates.append(match.group(1).strip())
+
+    for match in re.finditer(r"\bnamed\s+([A-Z][a-z]{2,24})\b", prompt):
+        candidates.append(match.group(1))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        label = _safe_label(raw)
+        if label in NON_ENTITY_HEADINGS or label == "NARRATOR":
+            continue
+        if len(label) < 3 or label in seen:
+            continue
+        seen.add(label)
+        result.append(label)
+    return result[:8]
+
+
+def _identity_context(prompt: str, label: str, limit: int = 700) -> str:
+    pretty = label.replace("_", " ")
+    # Prefer the dedicated character identity section and retain deeper nested
+    # facial/costume headings. Stop only at a heading of the same or higher level.
+    header = re.search(
+        rf"(?im)^(#{{1,2}})\s+{re.escape(pretty)}\s+[—-]\s+PERMANENT\s+CHARACTER\s+IDENTITY\s*$",
+        prompt,
+    )
+    if header:
+        level = len(header.group(1))
+        tail = prompt[header.end() :]
+        next_heading = re.search(rf"(?m)^#{{1,{level}}}\s+", tail)
+        body = tail[: next_heading.start()] if next_heading else tail
+        context = compact_text(body, limit)
+        if context:
+            return context
+    match = re.search(rf"(?is).{{0,220}}\b{re.escape(pretty)}\b.{{0,420}}", prompt)
+    return compact_text(match.group(0), limit) if match else ""
+
 
 def compact_text(value: str | None, limit: int = 2800) -> str:
     if not value:
@@ -62,26 +121,35 @@ def normalize_entity_locks(entity_locks: Iterable[EntityLock | dict] | None) -> 
 
 
 def infer_local_entity_locks(prompt: str) -> list[EntityLock]:
-    """Conservative fallback entity locks when the remote planner is unavailable.
-
-    This deliberately recognizes only common concrete subjects. The universal
-    anti-duplication rule still applies to unrecognized subjects, so a weak
-    heuristic can never force an invented extra character into the story.
-    """
-    text = compact_text(prompt, 4000).lower()
+    """Conservative local entity locks with explicit named-character support."""
+    raw = prompt or ""
+    text = compact_text(raw, 12000).lower()
     locks: list[EntityLock] = []
     used_terms: set[str] = set()
 
-    number_words = {
-        "one": 1,
-        "two": 2,
-        "three": 3,
-        "four": 4,
-        "five": 5,
-    }
+    named = _named_entity_labels(raw)
+    for label in named:
+        description = _identity_context(raw, label)
+        locks.append(
+            EntityLock(
+                label=label,
+                expected_count=1,
+                description=(
+                    description
+                    or f"Named recurring character {label.replace('_', ' ').title()}; preserve one canonical identity exactly."
+                ),
+            )
+        )
 
+    number_words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
     for label, terms in COMMON_ENTITY_PATTERNS:
-        matched_term = next((term for term in sorted(terms, key=len, reverse=True) if re.search(rf"\b{re.escape(term)}s?\b", text)), None)
+        # Multiple explicit named humans must not be collapsed into PERSON=1.
+        if label == "PERSON" and named:
+            continue
+        matched_term = next(
+            (term for term in sorted(terms, key=len, reverse=True) if re.search(rf"\b{re.escape(term)}s?\b", text)),
+            None,
+        )
         if not matched_term or matched_term in used_terms:
             continue
         used_terms.add(matched_term)
@@ -101,7 +169,7 @@ def infer_local_entity_locks(prompt: str) -> list[EntityLock]:
             )
         )
 
-    return locks[:8]
+    return normalize_entity_locks(locks)[:12]
 
 
 def _cardinality_block(
@@ -109,21 +177,8 @@ def _cardinality_block(
     visible_entity_counts: dict[str, int] | None,
 ) -> str:
     locks = normalize_entity_locks(entity_locks)
-    if not locks and not visible_entity_counts:
-        return (
-            "ENTITY COUNT LOCK: Keep one physical instance of each recurring subject unless the original "
-            "story explicitly requests multiple instances. Never spawn another copy merely because the subject "
-            "is described again in this prompt."
-        )
-
     by_label = {lock.label: lock for lock in locks}
-    lines = ["ENTITY COUNT LOCK (HARD CONSTRAINT):"]
-    for lock in locks:
-        detail = f" — {lock.description}" if lock.description else ""
-        lines.append(
-            f"- {lock.label}: canonical maximum {lock.expected_count} physical instance(s){detail}"
-        )
-
+    maxima = ", ".join(f"{lock.label}<={lock.expected_count}" for lock in locks)
     exact_counts: list[str] = []
     for raw_label, raw_count in (visible_entity_counts or {}).items():
         label = _safe_label(raw_label)
@@ -131,16 +186,50 @@ def _cardinality_block(
             count = max(0, min(8, int(raw_count)))
         except (TypeError, ValueError):
             continue
-        # Ignore planner hallucinations that exceed the canonical maximum.
         if label in by_label:
             count = min(count, by_label[label].expected_count)
         exact_counts.append(f"{label}={count}")
+    parts = []
+    if maxima:
+        parts.append(f"canonical maxima {maxima}")
     if exact_counts:
-        lines.append("- THIS SHOT MUST SHOW EXACTLY: " + ", ".join(exact_counts) + ".")
-    lines.append(
-        "- Text descriptions of an already-present subject are identity checks, not instructions to instantiate another copy."
-    )
-    return "\n".join(lines)
+        parts.append("THIS SHOT MUST SHOW EXACTLY: " + ", ".join(exact_counts))
+    if not parts:
+        parts.append("one physical instance of each recurring subject unless explicitly required otherwise")
+    return "ENTITY COUNT LOCK: " + "; ".join(parts) + ". Descriptions never instantiate another copy."
+
+
+def _identity_lock_block(
+    entity_locks: Iterable[EntityLock | dict] | None,
+    visible_entity_counts: dict[str, int] | None,
+    character_bible: str | None,
+) -> str:
+    locks = normalize_entity_locks(entity_locks)
+    visible = {
+        _safe_label(label)
+        for label, count in (visible_entity_counts or {}).items()
+        if int(count or 0) > 0
+    }
+    selected = [lock for lock in locks if not visible or lock.label in visible][:3]
+    lines: list[str] = []
+    for lock in selected:
+        detail = compact_text(lock.description, 100)
+        if detail:
+            lines.append(f"{lock.label}: {detail}")
+    if not lines and character_bible:
+        return "CHARACTER BIBLE / IDENTITY LOCK: " + compact_text(character_bible, 140)
+    return "CHARACTER BIBLE / IDENTITY LOCKS: " + " | ".join(lines) if lines else ""
+
+
+def _scene_body_from_locked_prompt(prompt: str) -> str:
+    """Extract only the generation-specific scene body from a planner-locked prompt."""
+    matches = list(re.finditer(r"\[SCENE\s+\d+\s+OF\s+\d+\]", prompt, flags=re.IGNORECASE))
+    if matches:
+        return prompt[matches[-1].end() :].strip()
+    match = re.search(r"\[STORY SCENE\]", prompt, flags=re.IGNORECASE)
+    if match:
+        return prompt[match.end() :].strip()
+    return prompt.strip()
 
 
 def compose_continuity_prompt(
@@ -156,75 +245,45 @@ def compose_continuity_prompt(
     retry_level: int = 0,
     qc_feedback: str | None = None,
 ) -> str:
-    """Attach identity, entity-cardinality and continuation locks to a scene prompt.
-
-    The critical distinction is NEW SHOT vs CONTINUATION SHOT. When a first-frame
-    reference exists, subjects in that frame are canonical existing instances. The
-    text must continue them rather than asking LTX to instantiate them again.
-    """
-    character = compact_text(character_bible)
-    style = compact_text(style_bible)
+    """Build a compact LTX shot prompt; reference frames remain authoritative."""
     prompt = scene_prompt.strip()
+    already_locked = f"[{CONTINUITY_HEADER}]" in prompt or f"[{CONTINUITY_HEADER} — CONTINUATION]" in prompt
+    if already_locked:
+        prompt = _scene_body_from_locked_prompt(prompt)
 
-    # Scene planner already locks its prompts. A later render pass still needs to
-    # add continuation/reference semantics if a new anchor frame is supplied.
-    already_locked = f"[{CONTINUITY_HEADER}]" in prompt
-    if already_locked and not reference_frame_present and retry_level <= 0:
-        return prompt
+    scene_label = (
+        f"SCENE {scene_index + 1} OF {scene_count}"
+        if scene_index is not None and scene_count
+        else "STORY SCENE"
+    )
+    identity = _identity_lock_block(entity_locks, visible_entity_counts, character_bible)
+    style = compact_text(style_bible, 110)
+    cardinality = _cardinality_block(entity_locks, visible_entity_counts)
 
-    if scene_index is not None and scene_count:
-        scene_label = f"SCENE {scene_index + 1} OF {scene_count}"
-    else:
-        scene_label = "STORY SCENE"
-
-    blocks: list[str] = []
-    if not already_locked:
-        blocks.extend(
-            [
-                f"[{CONTINUITY_HEADER}]",
-                "The following identity, cardinality and visual-style rules are immutable for the entire story.",
-            ]
-        )
-        if character:
-            blocks.append(f"CHARACTER BIBLE (DO NOT REINTERPRET): {character}")
-        if style:
-            blocks.append(f"VISUAL STYLE BIBLE (KEEP IDENTICAL): {style}")
-        blocks.append(_cardinality_block(entity_locks, visible_entity_counts))
-        blocks.append(
-            "CONTINUITY RULES: Preserve the exact same face identity, facial structure, apparent age, hairstyle, "
-            "hair color, eye color, skin/fur markings, body proportions, wardrobe colors, wardrobe design, "
-            "accessories and companion design across every scene. Do not redesign, recast, age, recolor or restyle "
-            "any recurring subject. Only action, pose, expression, camera framing, camera movement and story "
-            "progression may change unless the story explicitly requires an environmental or lighting change."
-        )
-        blocks.append(f"ANTI-DUPLICATION RULES: {ANTI_DUPLICATION_CONSTRAINTS}")
-    else:
-        # Preserve the original locked prompt verbatim and append only the additional
-        # runtime guard. This avoids multiplying the character bible on retries.
-        blocks.append(prompt)
-        prompt = ""
-
+    blocks = [f"[{CONTINUITY_HEADER}{' — CONTINUATION' if reference_frame_present else ''}]"]
     if reference_frame_present:
         blocks.append(
-            "[CONTINUATION SHOT — EXISTING SUBJECTS] The supplied first frame is authoritative. Every recurring "
-            "subject already visible in that frame is the one and only canonical physical instance of that subject. "
-            "Continue the same body, face, wardrobe, fur/markings, pose trajectory, screen position and motion from "
-            "that frame. DO NOT introduce, recreate, re-enter, spawn, mirror or clone a subject that is already "
-            "present. If the scene text names that subject again, interpret the words only as instructions for what "
-            "the existing subject does next."
+            "REFERENCE FRAME IS AUTHORITATIVE: recurring subjects are the one and only canonical physical instance. "
+            "Continue existing faces, bodies, wardrobe, props and geography. Describe only the next action/change. "
+            "DO NOT introduce, recreate, re-enter, spawn, mirror or clone them."
         )
+    if identity:
+        blocks.append(identity)
+    if style:
+        blocks.append("VISUAL STYLE BIBLE: " + style)
+    blocks.append(cardinality)
+    blocks.append(
+        "HARD CONTINUITY: Never create duplicate copies. No split/fused person, identity swap, body morph, extra face/limb, or unexplained costume/age change."
+    )
 
     if retry_level > 0:
-        feedback = compact_text(qc_feedback, 700)
+        feedback = compact_text(qc_feedback, 260)
         blocks.append(
-            "[CONTINUITY RECOVERY — MAXIMUM CARDINALITY STRICTNESS] A previous render was rejected for continuity. "
-            "Prioritize correct subject count over decorative background detail. Keep the canonical subject(s) "
-            "clearly separated, anatomically complete and unambiguous. Never place a second look-alike in the frame."
-            + (f" QC feedback: {feedback}" if feedback else "")
+            "QC RETRY: prioritize correct identity and subject count over background complexity."
+            + (f" Feedback: {feedback}" if feedback else "")
         )
 
-    if prompt:
-        blocks.extend([f"[{scene_label}]", prompt])
+    blocks.extend([f"[{scene_label}]", prompt])
     return "\n\n".join(blocks)
 
 
@@ -236,14 +295,22 @@ def safe_continuity_id(value: str | None) -> str:
 
 def local_character_bible(prompt: str) -> str:
     """Deterministic fallback identity lock when Gemini planning is unavailable."""
-    base = compact_text(prompt, 1800)
+    named = _named_entity_labels(prompt)
+    if named:
+        pieces: list[str] = []
+        for label in named:
+            context = _identity_context(prompt, label, 650)
+            pieces.append(
+                f"{label}: {context or 'preserve the same named character identity, face, age, body, clothing and recurring props exactly.'}"
+            )
+        base = " ".join(pieces)
+    else:
+        base = compact_text(prompt, 1400)
     return (
-        "Use the recurring main character(s) and companion(s) exactly as first established in the story. "
-        "Freeze face identity, facial geometry, apparent age, hairstyle, hair color, eye color, body build, "
-        "body proportions, clothing design and colors, footwear, accessories, and all animal fur markings, "
-        "size and proportions. The original story description is authoritative: "
+        "Immutable recurring-character identities. Freeze face geometry, apparent age, hairstyle, hair color, "
+        "eye color, skin/fur markings, body proportions, clothing design/colors, accessories and recurring props. "
         f"{base}"
-    )[:2800]
+    )[:2400]
 
 
 def local_style_bible(prompt: str) -> str:

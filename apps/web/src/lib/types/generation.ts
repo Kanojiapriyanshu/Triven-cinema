@@ -344,6 +344,9 @@ export interface FactoryGenerationResponse {
   continuity_qc_passed: boolean | null;
   continuity_regenerations: number;
   continuity_warnings: string[];
+  audio_qc_passed: boolean | null;
+  audio_retake_count: number;
+  audio_warnings: string[];
   youtube_video_id: string | null;
   youtube_url: string | null;
   youtube_privacy: YouTubePrivacy | null;

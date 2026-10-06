@@ -35,7 +35,7 @@ class PlanQualityReport(BaseModel):
 
 
 class ScenePlanRequest(BaseModel):
-    prompt: str = Field(..., min_length=3, max_length=5000)
+    prompt: str = Field(..., min_length=3, max_length=50000)
     aspect_ratio: AspectRatio = "16:9"
     scene_count: int = Field(default=4, ge=1, le=20)
 

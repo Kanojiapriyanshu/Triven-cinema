@@ -119,7 +119,9 @@ def _generate_video_impl(
     ensure_minimum_free_disk()
     provider_key = request.provider or settings.video_provider
     provider = get_video_provider(provider_key, model=request.model)
-    width, height = source_render_dimensions(request.aspect_ratio)
+    render_mode = "dfr" if request.quality != "preview" and provider_key == "modal" else "distilled"
+    effective_decoder = "diffusion" if render_mode == "dfr" else request.decoder
+    width, height = source_render_dimensions(request.aspect_ratio, request.quality)
 
     prompt_base = request.prompt
     provider_enhance_prompt = request.enhance_prompt
@@ -200,8 +202,9 @@ def _generate_video_impl(
             height=height,
             duration_seconds=request.duration_seconds,
             seed=request.seed,
-            decoder=request.decoder,
+            decoder=effective_decoder,
             enhance_prompt=provider_enhance_prompt if attempt == 0 else False,
+            render_mode=render_mode,
             reference_image_path=str(reference_path) if reference_path else None,
             reference_strength=request.continuity_strength,
             progress=chunk_progress,
@@ -222,6 +225,7 @@ def _generate_video_impl(
                 character_bible=enhanced_character_bible,
                 scene_prompt=prompt_to_render,
                 qc_mode=request.continuity_qc_mode,
+                reference_frame_path=reference_path,
             )
             qc_attempted = qc_attempted or not qc.skipped
             if qc.skipped and request.continuity_qc_mode == "strict":
@@ -300,7 +304,8 @@ def _generate_video_impl(
             "wall_seconds": round(wall_seconds, 3),
             "quality": request.quality,
             "audio_mode": request.audio_mode,
-            "decoder": request.decoder,
+            "decoder": effective_decoder,
+            "render_mode": render_mode,
             "seed": request.seed,
             "has_audio": media_info.has_audio,
             "audio_codec": media_info.audio_codec,
@@ -384,12 +389,12 @@ async def generation_capabilities():
             {
                 "id": "1080p",
                 "label": "1080p master",
-                "description": "Up to 30 seconds per scene using LTX-2.5 native temporal windowing with overlap/blending and one final delivery transcode.",
+                "description": "Production LTX-2.5 DFR source render with diffusion decode; Factory mode caps character-heavy shots to 10 seconds before final 1080p delivery.",
             },
             {
                 "id": "4k",
                 "label": "4K delivery master",
-                "description": "Up to 15 seconds per scene. Final 4K delivery master from the validated LTX source pipeline; not a native-4K source claim.",
+                "description": "Production LTX-2.5 DFR source render with diffusion decode, followed by the validated 4K delivery master; not a native-4K source claim.",
             },
         ],
         aspect_ratios=["16:9", "9:16", "1:1"],
@@ -581,7 +586,7 @@ def generate_full_video(request: FullVideoGenerationRequest):
         validate_scene_duration(quality=request.quality, duration_seconds=request.duration_seconds)
         ensure_minimum_free_disk()
         provider = get_video_provider(request.provider or settings.video_provider, model=request.model)
-        width, height = source_render_dimensions(request.aspect_ratio)
+        width, height = source_render_dimensions(request.aspect_ratio, request.quality)
 
         generated_paths: list[Path] = []
         scene_urls: list[str] = []

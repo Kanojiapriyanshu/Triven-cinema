@@ -16,12 +16,13 @@ class VideoGenerationResult:
     wall_seconds: float | None = None
     reference_conditioned: bool = False
     chunk_count: int = 1
+    render_mode: str = "distilled"
 
 
 class VideoProvider(ABC):
     name: str
-    # Providers may opt into native temporal windowing for long clips.
     supports_native_long_video: bool = False
+    supports_audio_retake: bool = False
 
     @abstractmethod
     def generate(
@@ -33,7 +34,18 @@ class VideoProvider(ABC):
         seed: int,
         decoder: str,
         enhance_prompt: bool = False,
+        render_mode: str = "distilled",
         reference_image_path: str | None = None,
         reference_strength: float = 0.95,
     ) -> VideoGenerationResult:
         raise NotImplementedError
+
+    def retake_audio(
+        self,
+        *,
+        video_path: str,
+        prompt: str,
+        duration_seconds: float,
+        seed: int,
+    ) -> VideoGenerationResult:
+        raise NotImplementedError(f"{self.name} does not support LTX audio Retake.")

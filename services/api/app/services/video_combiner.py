@@ -46,34 +46,23 @@ def extract_continuity_frame(input_path: Path, output_path: Path) -> Path:
     """Extract a stable near-end frame for the next scene's first-frame anchor.
 
     The literal final frame is often motion-blurred, half-occluded, or already in a
-    transition. We sample a few near-end candidates and keep the richest lossless
-    PNG as a lightweight sharpness/detail proxy. This also avoids deprecated
+    transition. We try a few near-end candidates, closest to the actual cut first,
+    so the next scene does not visibly jump backwards. This also avoids deprecated
     ``-vsync`` so FFmpeg 7/8/9 all work.
     """
-    candidates: list[Path] = []
-    try:
-        for index, offset in enumerate((0.35, 0.20, 0.08)):
-            candidate = output_path.with_name(f".{output_path.stem}-candidate-{index}.png")
-            try:
-                _extract_png(input_path, candidate, end_offset=offset)
-                candidates.append(candidate)
-            except VideoCombineError:
-                candidate.unlink(missing_ok=True)
-
-        if not candidates:
-            raise VideoCombineError("Unable to extract a usable continuity frame.")
-
-        # Lossless PNG size is a cheap cross-platform proxy for retained image
-        # detail. It is intentionally only used to choose among frames within the
-        # final 350 ms, so temporal continuity remains intact.
-        best = max(candidates, key=lambda path: path.stat().st_size)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        best.replace(output_path)
-        return output_path
-    finally:
-        for candidate in candidates:
-            if candidate != output_path:
-                candidate.unlink(missing_ok=True)
+    # Prefer the frame closest to the actual cut. The old implementation selected
+    # the largest PNG from up to 350 ms earlier, which could make the next scene
+    # visibly jump backwards before moving forward again.
+    for index, offset in enumerate((0.08, 0.14, 0.22, 0.35)):
+        candidate = output_path.with_name(f".{output_path.stem}-candidate-{index}.png")
+        try:
+            _extract_png(input_path, candidate, end_offset=offset)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate.replace(output_path)
+            return output_path
+        except VideoCombineError:
+            candidate.unlink(missing_ok=True)
+    raise VideoCombineError("Unable to extract a usable continuity frame.")
 
 
 def extract_last_frame(input_path: Path, output_path: Path) -> Path:

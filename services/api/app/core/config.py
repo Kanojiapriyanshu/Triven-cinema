@@ -19,8 +19,11 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
-    gemini_timeout_seconds: float = 12.0
+    gemini_timeout_seconds: float = 20.0
     gemini_thinking_level: str = "low"
+    gemini_fallback_models: str = "gemini-3.7-flash,gemini-3.6-flash"
+    gemini_max_attempts_per_model: int = 3
+    gemini_retry_backoff_seconds: float = 0.8
 
     video_provider: str = "huggingface"
     hf_token: str = ""
@@ -28,7 +31,7 @@ class Settings(BaseSettings):
 
     modal_app_name: str = "triven-cinema-ltx"
     modal_function_name: str = "generate_video"
-    triven_ltx_repo_ref: str = "main"
+    triven_ltx_repo_ref: str = "v1.3.0"
 
     # Keep these at 0 until you copy the current hourly rates from Modal.
     # They are used only for explicit cost estimates, never presented as billed cost.
@@ -49,6 +52,17 @@ class Settings(BaseSettings):
     max_1080p_scene_seconds: float = 30.0
     max_4k_scene_seconds: float = 15.0
     max_factory_duration_seconds: int = 300
+    # Quality-first Factory shots are intentionally shorter. Independent long shots
+    # increase identity/cardinality drift even when temporal windowing is available.
+    cinema_max_scene_seconds: float = 10.0
+    factory_allow_fallback_final: bool = False
+
+    # Final-render audio guard. Gemini inspects rendered audio for gibberish or
+    # unintended speech; Modal can repair failed audio via LTX Retake while keeping
+    # the picture frozen.
+    factory_audio_qc_enabled: bool = True
+    factory_audio_retake_enabled: bool = True
+    factory_audio_qc_strict_final: bool = True
 
     # Continuity/cardinality guard. "auto" requests use this visual QC gate when
     # Gemini is configured; QC failures can trigger a bounded regeneration before

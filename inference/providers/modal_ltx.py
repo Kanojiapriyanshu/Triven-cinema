@@ -21,17 +21,22 @@ class ModalLTXProvider(VideoProvider):
 
     name = "modal-ltx-2.5"
     supports_native_long_video = True
+    supports_audio_retake = True
 
     def __init__(self):
-        self.app_name = os.getenv(
-            "MODAL_APP_NAME",
-            "triven-cinema-ltx",
-        )
-        self.function_name = os.getenv(
-            "MODAL_FUNCTION_NAME",
-            "generate_video",
-        )
+        self.app_name = os.getenv("MODAL_APP_NAME", "triven-cinema-ltx")
+        self.function_name = os.getenv("MODAL_FUNCTION_NAME", "generate_video")
+        self.audio_retake_function_name = os.getenv("MODAL_AUDIO_RETAKE_FUNCTION_NAME", "retake_audio")
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _write_video(video_bytes: bytes, prefix: str) -> Path:
+        filename = f"{prefix}-{uuid.uuid4().hex}.mp4"
+        destination = GENERATED_DIR / filename
+        temporary = destination.with_suffix(".mp4.part")
+        temporary.write_bytes(video_bytes)
+        temporary.replace(destination)
+        return destination
 
     def generate(
         self,
@@ -42,6 +47,7 @@ class ModalLTXProvider(VideoProvider):
         seed: int,
         decoder: str,
         enhance_prompt: bool = False,
+        render_mode: str = "distilled",
         reference_image_path: str | None = None,
         reference_strength: float = 0.95,
     ) -> VideoGenerationResult:
@@ -57,10 +63,7 @@ class ModalLTXProvider(VideoProvider):
             reference_suffix = path.suffix.lower() or ".png"
 
         try:
-            remote_function = modal.Function.from_name(
-                self.app_name,
-                self.function_name,
-            )
+            remote_function = modal.Function.from_name(self.app_name, self.function_name)
             result = remote_function.remote(
                 prompt=prompt,
                 width=width,
@@ -69,6 +72,7 @@ class ModalLTXProvider(VideoProvider):
                 seed=seed,
                 decoder=decoder,
                 enhance_prompt=enhance_prompt,
+                render_mode=render_mode,
                 reference_image_bytes=reference_bytes,
                 reference_image_suffix=reference_suffix,
                 reference_strength=float(reference_strength),
@@ -89,28 +93,15 @@ class ModalLTXProvider(VideoProvider):
         video_bytes = result.get("video_bytes")
         if not video_bytes:
             raise RuntimeError("Modal returned no video bytes.")
-
-        filename = f"ltx-modal-{uuid.uuid4().hex}.mp4"
-        destination = GENERATED_DIR / filename
-        temporary = destination.with_suffix(".mp4.part")
-        temporary.write_bytes(video_bytes)
-        temporary.replace(destination)
+        destination = self._write_video(video_bytes, "ltx-modal")
 
         wall_elapsed = time.perf_counter() - started
-        elapsed = float(result.get("render_seconds") or 0.0)
-        if elapsed <= 0:
-            elapsed = wall_elapsed
-
+        elapsed = float(result.get("render_seconds") or 0.0) or wall_elapsed
         return VideoGenerationResult(
-            filename=filename,
+            filename=destination.name,
             path=str(destination),
             seed=int(result.get("seed", seed)),
-            render_details=str(
-                result.get(
-                    "render_details",
-                    f"{width}x{height} · Modal LTX-2.5",
-                )
-            ),
+            render_details=str(result.get("render_details", f"{width}x{height} · Modal LTX-2.5")),
             render_seconds=elapsed,
             prompt=str(result.get("prompt", prompt)),
             provider=self.name,
@@ -118,4 +109,52 @@ class ModalLTXProvider(VideoProvider):
             wall_seconds=wall_elapsed,
             reference_conditioned=bool(result.get("reference_conditioned", False)),
             chunk_count=max(1, int(result.get("chunk_count") or 1)),
+            render_mode=str(result.get("render_mode") or render_mode),
+        )
+
+    def retake_audio(
+        self,
+        *,
+        video_path: str,
+        prompt: str,
+        duration_seconds: float,
+        seed: int,
+    ) -> VideoGenerationResult:
+        source = Path(video_path)
+        if not source.exists():
+            raise FileNotFoundError(f"Audio Retake source video not found: {source.name}")
+
+        started = time.perf_counter()
+        try:
+            remote_function = modal.Function.from_name(self.app_name, self.audio_retake_function_name)
+            result = remote_function.remote(
+                video_bytes=source.read_bytes(),
+                prompt=prompt,
+                duration_seconds=float(duration_seconds),
+                seed=int(seed),
+            )
+        except Exception as exc:
+            LOGGER.exception("Modal LTX audio Retake failed app=%s", self.app_name)
+            detail = (str(exc) or repr(exc)).strip().replace("\n", " ")[:600]
+            raise RuntimeError(f"Modal LTX audio Retake failed: {detail}") from exc
+
+        video_bytes = result.get("video_bytes")
+        if not video_bytes:
+            raise RuntimeError("Modal audio Retake returned no video bytes.")
+        destination = self._write_video(video_bytes, "ltx-audio-retake")
+        wall_elapsed = time.perf_counter() - started
+        elapsed = float(result.get("render_seconds") or 0.0) or wall_elapsed
+        return VideoGenerationResult(
+            filename=destination.name,
+            path=str(destination),
+            seed=int(result.get("seed", seed)),
+            render_details=str(result.get("render_details") or "LTX Retake · audio-only"),
+            render_seconds=elapsed,
+            prompt=str(result.get("prompt", prompt)),
+            provider=self.name,
+            gpu=str(result.get("gpu") or "Modal GPU"),
+            wall_seconds=wall_elapsed,
+            reference_conditioned=True,
+            chunk_count=1,
+            render_mode="audio-retake",
         )

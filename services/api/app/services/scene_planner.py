@@ -1,8 +1,8 @@
 import json
+import math
 import re
 from dataclasses import dataclass
 
-import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.config import settings
@@ -13,6 +13,7 @@ from app.services.continuity_service import (
     local_character_bible,
     local_style_bible,
 )
+from app.services.gemini_service import generate_content
 
 
 class EntityLockDraft(BaseModel):
@@ -66,6 +67,13 @@ def _compact(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _limit_words(value: str, limit: int) -> str:
+    words = _compact(value).split()
+    if len(words) <= limit:
+        return " ".join(words)
+    return " ".join(words[:limit]).rstrip(" ,;:") + "."
+
+
 def _locked_scenes(
     scenes: list[Scene],
     *,
@@ -94,87 +102,243 @@ def _locked_scenes(
     ]
 
 
+def _story_only(prompt: str) -> str:
+    """Prefer the screenplay/story body over style and negative-rule preambles."""
+    match = re.search(r"(?im)^#{1,3}\s+STORY\s*$", prompt)
+    if match:
+        return prompt[match.end() :].strip()
+    return prompt.strip()
+
+
+def _story_units(prompt: str) -> list[tuple[str, str]]:
+    story = _story_only(prompt)
+    heading = re.compile(r"(?m)^#{1,2}\s+(.+?)\s*$")
+    matches = list(heading.finditer(story))
+    units: list[tuple[str, str]] = []
+    skip_terms = {
+        "FINAL TITLE CARD",
+        "NEGATIVE GENERATION RULES",
+        "GENERATION PRIORITY",
+    }
+
+    if matches:
+        for index, match in enumerate(matches):
+            title = _compact(match.group(1).strip("# "))
+            upper = title.upper()
+            if any(term in upper for term in skip_terms):
+                continue
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(story)
+            body = story[match.end() : end].strip()
+            body = re.sub(r"(?m)^#{1,6}\s+", "", body)
+            body = _compact(body)
+            if body:
+                units.append((title[:96], body))
+
+    if units:
+        return units
+
+    paragraphs = [_compact(item) for item in re.split(r"\n\s*\n+", story) if _compact(item)]
+    if len(paragraphs) > 1:
+        return [(f"Story beat {index + 1}", item) for index, item in enumerate(paragraphs)]
+
+    sentences = [
+        _compact(item)
+        for item in re.split(r"(?<=[.!?])\s+", _compact(story))
+        if _compact(item)
+    ]
+    return [(f"Story beat {index + 1}", item) for index, item in enumerate(sentences)]
+
+
+def _distribute_story_units(units: list[tuple[str, str]], scene_count: int) -> list[tuple[str, str]]:
+    if not units:
+        return [(f"Scene {index + 1}", "Continue the requested story naturally.") for index in range(scene_count)]
+
+    groups: list[tuple[str, str]] = []
+    for index in range(scene_count):
+        start = math.floor(index * len(units) / scene_count)
+        end = math.floor((index + 1) * len(units) / scene_count)
+        if end <= start:
+            source_index = min(start, len(units) - 1)
+            selected = [units[source_index]]
+        else:
+            selected = units[start:end]
+        title = selected[0][0] if selected else f"Scene {index + 1}"
+        body = " ".join(item[1] for item in selected)
+        groups.append((title, _limit_words(body, 55)))
+    return groups
+
+
+def _direct_style_context(prompt: str, max_words: int = 42) -> str:
+    """Extract only user-authored visual-style text for prompt-only Factory mode.
+
+    Direct mode must not ask Gemini to rewrite the request, but a long screenplay
+    still needs one small piece of repeated style context so independently rendered
+    LTX shots do not drift into different visual media. We only reuse words that
+    already exist in the user's prompt.
+    """
+    match = re.search(r"(?im)^#{1,3}\s+CORE VISUAL STYLE\s*$", prompt)
+    if not match:
+        return ""
+    next_heading = re.search(r"(?m)^#{1,3}\s+.+$", prompt[match.end() :])
+    end = match.end() + next_heading.start() if next_heading else len(prompt)
+    body = re.sub(r"(?m)^[-*]\s+", "", prompt[match.end() : end]).strip()
+    return _limit_words(body, max_words)
+
+
+def _sentence_bounded_excerpt(value: str, word_budget: int) -> str:
+    """Keep a source excerpt near a word budget without inventing new wording."""
+    compact = _compact(value)
+    if len(compact.split()) <= word_budget:
+        return compact
+
+    pieces = [
+        _compact(piece)
+        for piece in re.split(r"(?<=[.!?…])\s+", compact)
+        if _compact(piece)
+    ]
+    selected: list[str] = []
+    used = 0
+    for piece in pieces:
+        words = piece.split()
+        if selected and used + len(words) > word_budget:
+            break
+        if not selected and len(words) > word_budget:
+            return _limit_words(piece, word_budget)
+        selected.append(piece)
+        used += len(words)
+        if used >= word_budget:
+            break
+    return " ".join(selected) if selected else _limit_words(compact, word_budget)
+
+
+def _direct_story_segments(
+    prompt: str,
+    scene_count: int,
+    *,
+    words_per_scene: int = 118,
+) -> list[tuple[str, str]]:
+    """Build chronological prompt-only scenes from user-authored story sections.
+
+    This is deliberately *not* AI enhancement. It is deterministic orchestration:
+    take the user's own story in order, divide it across the requested number of
+    LTX shots, and keep source wording rather than feeding the same full manuscript
+    to every shot.
+    """
+    units = _story_units(prompt)
+    if not units:
+        clean = _compact(prompt)
+        return [(f"Scene {index + 1}", clean) for index in range(max(1, scene_count))]
+
+    # If a manuscript has only a few very large sections, split those sections on
+    # sentence boundaries first so a multi-shot direct render can still progress.
+    expanded: list[tuple[str, str]] = []
+    target_unit_words = max(28, words_per_scene // 2)
+    for title, body in units:
+        words = body.split()
+        if len(words) <= target_unit_words * 2:
+            expanded.append((title, body))
+            continue
+
+        sentences = [
+            _compact(piece)
+            for piece in re.split(r"(?<=[.!?…])\s+", body)
+            if _compact(piece)
+        ]
+        chunk: list[str] = []
+        chunk_words = 0
+        part = 1
+        for sentence in sentences:
+            sentence_words = len(sentence.split())
+            if chunk and chunk_words + sentence_words > target_unit_words:
+                expanded.append((f"{title} · part {part}", " ".join(chunk)))
+                part += 1
+                chunk = []
+                chunk_words = 0
+            chunk.append(sentence)
+            chunk_words += sentence_words
+        if chunk:
+            expanded.append((f"{title} · part {part}" if part > 1 else title, " ".join(chunk)))
+
+    units = expanded or units
+    result: list[tuple[str, str]] = []
+    for index in range(max(1, scene_count)):
+        start = math.floor(index * len(units) / scene_count)
+        end = math.floor((index + 1) * len(units) / scene_count)
+        if end <= start:
+            source_index = min(start, len(units) - 1)
+            selected = [units[source_index]]
+        else:
+            selected = units[start:end]
+
+        per_unit_budget = max(24, words_per_scene // max(1, len(selected)))
+        excerpts: list[str] = []
+        for title, body in selected:
+            excerpt = _sentence_bounded_excerpt(body, per_unit_budget)
+            if excerpt:
+                excerpts.append(f"{title}: {excerpt}")
+        scene_title = selected[0][0] if selected else f"Scene {index + 1}"
+        result.append((scene_title[:120], " ".join(excerpts)))
+    return result
+
+
+def _visible_counts_for_beat(beat: str, entity_locks: list[EntityLock]) -> dict[str, int]:
+    text = beat.lower()
+    counts: dict[str, int] = {}
+    for lock in entity_locks:
+        label = lock.label.upper()
+        label_words = label.replace("_", " ").lower()
+        # Named labels are reliable enough for exact local fallback counts. Generic
+        # category locks are left unspecified rather than inventing visibility.
+        if label not in {"PERSON", "FOX", "DOG", "CAT", "HORSE", "ROBOT", "CAR"}:
+            counts[label] = 1 if re.search(rf"\b{re.escape(label_words)}\b", text) else 0
+    return counts
+
+
 def _local_storyboard(
     prompt: str,
     scene_count: int,
     target_duration_seconds: int = 5,
 ) -> tuple[list[Scene], str, str, list[EntityLock]]:
-    """Fast deterministic fallback that never blocks the render pipeline."""
-    base = _compact(prompt)
-    character_bible = local_character_bible(base)
-    style_bible = local_style_bible(base)
-    entity_locks = infer_local_entity_locks(base)
+    """Deterministic preview fallback without copying the whole manuscript per shot.
+
+    Final-quality Factory jobs normally reject this fallback. It remains useful for
+    preview/debug workflows and should still preserve obvious named identities.
+    """
+    character_bible = local_character_bible(prompt)
+    style_bible = local_style_bible(prompt)
+    entity_locks = infer_local_entity_locks(prompt)
+    beats = _distribute_story_units(_story_units(prompt), scene_count)
     scenes: list[Scene] = []
 
     shot_guidance = [
-        (
-            "Establishing Shot",
-            "Begin with a clear establishing view that introduces the recurring subject and environment. "
-            "Use smooth cinematic movement and make the main action immediately readable.",
-        ),
-        (
-            "Tracking Continuation",
-            "Continue directly from the previous shot. Move closer with a smooth tracking or follow shot "
-            "while the action naturally progresses.",
-        ),
-        (
-            "Detail Progression",
-            "Continue the same moment with a more intimate medium or close shot. Show a meaningful detail "
-            "or action beat without redesigning any recurring subject.",
-        ),
-        (
-            "Cinematic Reveal",
-            "Advance the action with a wider reveal or motivated camera move that adds scale while keeping "
-            "the recurring subject identity and environment coherent.",
-        ),
-        (
-            "Emotional Beat",
-            "Continue the story with an emotional or interaction beat. Preserve the same characters, companion, "
-            "wardrobe, proportions and visual treatment.",
-        ),
-        (
-            "Companion Progression",
-            "Continue the journey with the recurring characters sharing the frame. Use a complementary angle "
-            "while maintaining strict visual identity continuity.",
-        ),
-        (
-            "Journey Continuation",
-            "Progress the action naturally through the established environment with a smooth cinematic move. "
-            "Keep every recurring visual identity unchanged.",
-        ),
-        (
-            "Pre-Finale",
-            "Build toward the ending with a wider cinematic composition while preserving the exact established "
-            "character and companion appearance.",
-        ),
-        (
-            "Closing Shot",
-            "Finish the sequence with a visually resolved final beat and a deliberate cinematic camera move.",
-        ),
-        (
-            "Final Hold",
-            "End on a strong final composition that resolves the story while preserving the established identity "
-            "and visual language exactly.",
-        ),
+        "Establish the location and current subject state with restrained cinematic movement.",
+        "Continue the established action and geography with a smooth tracking or motivated cut.",
+        "Move closer for an emotional or story-detail beat without changing identity or wardrobe.",
+        "Advance the story with a clear reveal while preserving the established environment.",
+        "Use a calm interaction beat with readable expressions and stable screen geography.",
+        "Progress naturally through the established location; do not re-introduce recurring characters.",
+        "Build toward the ending with a deliberate composition and controlled movement.",
+        "Resolve the sequence with a quiet, visually complete final beat.",
     ]
 
     for index in range(scene_count):
-        title, guidance = shot_guidance[min(index, len(shot_guidance) - 1)]
+        title, beat = beats[index]
+        guidance = shot_guidance[min(index, len(shot_guidance) - 1)]
         scene_prompt = (
-            f"{base}\n\nSHOT {index + 1} OF {scene_count}: {guidance} "
-            "Describe subject action, environment, camera framing, camera movement, lighting and atmosphere. "
-            "Include a concise synchronized AUDIO DIRECTION for ambience and Foley that belong to the visible action; "
-            "only include dialogue, narration or music when the original request asks for it. "
-            "No subtitles, logos, text overlays or watermarks unless the original request explicitly asks for them. "
-            "Do not mention output resolution."
+            f"STORY BEAT: {beat} "
+            f"SHOT DIRECTION: {guidance} "
+            "Keep this as one continuous shot. Describe only what happens during this shot, not the whole story. "
+            "AUDIO DIRECTION: use only synchronized ambience, Foley, music, narration or exact dialogue that is "
+            "explicitly supported by this story beat; never invent speech, chanting, singing or background conversation. "
+            "No subtitles, logos, text overlays or watermarks."
         )
         scenes.append(
             Scene(
                 id=index + 1,
-                title=f"{title} {index + 1}",
-                prompt=scene_prompt,
+                title=(title or f"Scene {index + 1}")[:120],
+                prompt=_limit_words(scene_prompt, 80),
                 duration_seconds=max(3, min(30, int(target_duration_seconds))),
-                visible_entity_counts={},
+                visible_entity_counts=_visible_counts_for_beat(beat, entity_locks),
             )
         )
 
@@ -196,7 +360,7 @@ def _extract_json_text(payload: dict) -> str:
     if not candidates:
         raise RuntimeError("Gemini returned no candidates.")
     parts = ((candidates[0].get("content") or {}).get("parts") or [])
-    text = "".join(str(part.get("text") or "") for part in parts).strip()
+    text = "".join(str(part.get("text") or "") for part in parts if not part.get("thought")).strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text)
@@ -211,15 +375,12 @@ def _gemini_storyboard(
     aspect_ratio: str,
     target_duration_seconds: int = 5,
 ) -> tuple[list[Scene], str, str, list[EntityLock]]:
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured.")
-
     planner_prompt = f"""
 You are the cinematic continuity and scene-planning engine for Triven Cinema.
 
-Convert the user's idea into exactly {scene_count} video-generation scenes. The shots will be rendered
-separately by LTX-2.5, so you MUST establish one immutable identity specification and one immutable
-visual-style specification before writing the individual shots.
+Convert the user's manuscript into exactly {scene_count} generation-ready LTX-2.5 shots. These shots are
+rendered separately and then chained, so identity, geography, audio intent and temporal progression matter
+more than decorative detail.
 
 ORIGINAL USER REQUEST:
 {prompt}
@@ -229,97 +390,68 @@ TARGET ASPECT RATIO:
 
 Return ONLY valid JSON with this exact top-level shape:
 {{
-  "entity_locks": [{{"label": "ADVENTURER", "expected_count": 1, "description": "canonical recurring subject"}}],
-  "character_bible": "one explicit immutable description of every recurring human/creature",
-  "style_bible": "one explicit immutable visual/style description shared by the whole film",
+  "entity_locks": [{{"label": "RADHA", "expected_count": 1, "description": "canonical recurring subject"}}],
+  "character_bible": "one compact immutable description of every recurring human/creature",
+  "style_bible": "one compact immutable visual/style description shared by the whole film",
   "scenes": [
     {{
       "title": "short title",
       "prompt": "scene-specific generation-ready video prompt",
-      "duration_seconds": 5,
-      "visible_entity_counts": {{"ADVENTURER": 1}}
+      "duration_seconds": {target_duration_seconds},
+      "visible_entity_counts": {{"RADHA": 1, "KRISHNA": 0}}
     }}
   ]
 }}
 
 ENTITY/CARDINALITY RULES:
-- Create one stable UPPERCASE label for every recurring physical subject.
-- expected_count is the canonical number of physical instances allowed in the story; default to 1 unless the user explicitly requests multiples.
-- Every scene must include visible_entity_counts for recurring entities that are actually visible in that shot. Use 0 only when the entity is intentionally absent.
-- Never increase a visible count just because a character is named again. A recurring subject already on screen is the same physical instance.
-- Do not treat shadows or reflections as additional physical instances.
+- Create one stable UPPERCASE label for every NAMED recurring physical subject (RADHA, KRISHNA, etc.).
+- Never collapse multiple named humans into a generic PERSON lock. RADHA and KRISHNA are separate identities.
+- expected_count is the canonical maximum number of physical instances of that identity; normally 1.
+- Every scene must provide exact visible_entity_counts for all recurring named entities: 0 when absent, 1 when present.
+- Do not count reflections or shadows as additional physical instances.
+- If a group such as GOPIS is requested, do not turn members of that group into copies of a named lead.
 
 CHARACTER BIBLE RULES:
-- Write the recurring subject identity ONCE, with stable labels such as ADVENTURER and FOX when relevant.
-- For each recurring human, explicitly lock apparent age, face shape/structure, skin tone, eye color, hair color,
-  hairstyle, build/body proportions, wardrobe pieces and colors, footwear and recurring accessories.
-- For each recurring animal/creature, explicitly lock species, size/proportions, fur/skin colors, markings,
-  eye color and distinctive features.
-- If the user did not specify a visual trait needed for continuity, choose one reasonable trait ONCE and lock it.
-- Never describe camera action or a temporary pose in the character bible.
-- Never change a locked trait later in the storyboard.
+- Preserve explicit user-provided identity traits; do not replace them with generic descriptions.
+- For recurring humans lock apparent age/stage, face structure, skin tone, eyes, hair, build, clothing palette/design,
+  jewelry/accessories and recurring props. Keep each named identity distinct.
+- For creatures lock species, size/proportions, colors/markings and distinctive features.
+- Keep this bible compact enough to condition every relevant shot; do not paste the whole manuscript into it.
 
-STYLE BIBLE RULES:
-- Lock the visual medium (for example feature-animation vs photorealistic), rendering treatment, palette,
-  material/skin/fur treatment, lens language, lighting logic and atmosphere.
-- Preserve the user's requested style. Do not silently switch between animated and photorealistic treatment.
+STYLE/ENVIRONMENT RULES:
+- Lock the requested visual medium, rendering treatment, palette, materials, lens language, lighting and atmosphere.
+- Preserve recurring landmarks and screen geography where the manuscript establishes them.
+- Preserve the user's requested style; never silently switch medium between shots.
 
 SCENE RULES:
-- Return exactly {scene_count} scenes.
-- Each scene is one continuous shot and should progress the story rather than restating the full story.
-- For scene 2 onward, write the action as a continuation of the existing recurring subjects, not as a new introduction or re-entry, unless the story explicitly introduces a new entity at that moment.
-- Never use wording that can imply a second copy such as "another ADVENTURER", "a new FOX", or re-describing the same subject as if it just appeared.
-- Refer to recurring subjects using the exact labels established by the character bible.
-- Do NOT invent a different face, hair, wardrobe, body build, companion design or color palette per scene.
-- Describe only the scene-specific action, environment state, framing, camera movement, expression and lighting change.
-- Every scene prompt must include an AUDIO DIRECTION sentence for synchronized ambience/Foley that matches visible action.
-- Add spoken dialogue, narration or music only when the original user request asks for it; never invent speech.
-- Keep the audio world continuous across cuts unless the story intentionally changes location.
-- Prompts must be directly usable by LTX-2.5.
-- Pace each shot for about {target_duration_seconds} seconds, always between 3 and 30 seconds.
-- Longer 15-30 second shots need multiple meaningful action beats and sustained camera motion; do not describe a five-second action and then leave dead time.
-- Keep each scene-specific prompt below 180 words.
-- No subtitles, logos, text overlays or watermarks unless requested.
-- Do not mention 4K, 8K, 1080p, UHD or unsupported quality claims.
+- Return exactly {scene_count} chronological scenes and cover the full requested runtime/story arc.
+- Each scene is ONE continuous shot/beat. NEVER restate or paste the full original story into an individual scene.
+- Keep each scene prompt below 80 words so the final continuity-wrapped LTX prompt stays near the recommended 200-word ceiling.
+- Describe only the action, environment state, framing, camera movement, expression and lighting needed for that shot.
+- For scene 2 onward, recurring subjects are existing characters, not new introductions or alternate versions.
+- When the next shot is image-conditioned by the previous approved frame, wording must describe what CHANGES/NEXT ACTION,
+  not recreate already-established faces, clothes or bodies.
+- Avoid morph transitions through bodies. Prefer natural cuts, camera movement, match cuts, scenery dissolves or environmental transitions.
+- Do not place two copies of the same named identity in one frame unless the manuscript explicitly requests a duplicate.
+- AUDIO DIRECTION must be chronological and concise. Do not invent speech.
+- If dialogue is requested, include ONLY the exact short line(s) spoken in this shot, in quotes, with the correct speaker.
+- Do not stuff multiple paragraphs of narration/dialogue into a {target_duration_seconds}s shot.
+- If long narration exists, select only the words that can naturally fit this shot; preserve chronology.
+- No fake Hindi/Sanskrit, random singing, mumbling, speech-like ambience, subtitles, logos or watermarks.
+- Do not mention output resolution.
 - Do not include any explanation outside the JSON object.
 """.strip()
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
+    gemini = generate_content(
+        parts=[{"text": planner_prompt}],
+        response_mime_type="application/json",
+        max_output_tokens=8192,
+        timeout_seconds=settings.gemini_timeout_seconds,
+        thinking_level=settings.gemini_thinking_level,
     )
 
     try:
-        response = httpx.post(
-            url,
-            params={"key": settings.gemini_api_key},
-            json={
-                "contents": [{"parts": [{"text": planner_prompt}]}],
-                "generationConfig": {
-                    "responseMimeType": "application/json",
-                    "maxOutputTokens": 6144,
-                },
-            },
-            timeout=httpx.Timeout(settings.gemini_timeout_seconds),
-        )
-    except httpx.TimeoutException as exc:
-        raise RuntimeError("Gemini storyboard request timed out.") from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeError("Gemini storyboard request could not be completed.") from exc
-
-    if response.status_code != 200:
-        safe_detail = ""
-        try:
-            error_payload = response.json().get("error") or {}
-            safe_detail = str(error_payload.get("status") or error_payload.get("message") or "")
-        except Exception:
-            safe_detail = ""
-        suffix = f" ({safe_detail[:180]})" if safe_detail else ""
-        raise RuntimeError(f"Gemini returned HTTP {response.status_code}{suffix}")
-
-    try:
-        payload = response.json()
-        raw_text = _extract_json_text(payload)
+        raw_text = _extract_json_text(gemini.payload)
         parsed = ScenePlannerOutput.model_validate_json(raw_text)
     except (ValueError, json.JSONDecodeError, ValidationError) as exc:
         raise RuntimeError("Gemini returned an invalid storyboard JSON response.") from exc
@@ -329,13 +461,13 @@ SCENE RULES:
             f"Expected {scene_count} scenes but Gemini returned {len(parsed.scenes)}."
         )
 
-    character_bible = _compact(parsed.character_bible)[:2400]
-    style_bible = _compact(parsed.style_bible)[:1800]
+    character_bible = _compact(parsed.character_bible)[:1800]
+    style_bible = _compact(parsed.style_bible)[:1000]
     entity_locks = [
         EntityLock(
             label=_compact(lock.label).upper()[:64],
             expected_count=lock.expected_count,
-            description=_compact(lock.description)[:1200],
+            description=_compact(lock.description)[:1000],
         )
         for lock in parsed.entity_locks
     ]
@@ -343,9 +475,12 @@ SCENE RULES:
         Scene(
             id=index + 1,
             title=_compact(scene.title)[:120] or f"Scene {index + 1}",
-            prompt=_compact(scene.prompt),
-            duration_seconds=scene.duration_seconds,
-            visible_entity_counts={str(k).upper(): max(0, min(8, int(v))) for k, v in scene.visible_entity_counts.items()},
+            prompt=_limit_words(scene.prompt, 80),
+            duration_seconds=max(3, min(30, int(scene.duration_seconds))),
+            visible_entity_counts={
+                str(k).upper(): max(0, min(8, int(v)))
+                for k, v in scene.visible_entity_counts.items()
+            },
         )
         for index, scene in enumerate(parsed.scenes)
     ]
@@ -362,6 +497,67 @@ SCENE RULES:
     )
 
 
+def create_prompt_only_plan(
+    prompt: str,
+    scene_count: int,
+    *,
+    target_scene_duration_seconds: float | None = None,
+) -> ScenePlanResult:
+    """Create a chronological Factory plan without Gemini or creative rewriting.
+
+    AI Enhancement OFF means the user's prompt remains the only creative source.
+    For multi-shot Factory jobs we deterministically sequence user-authored story
+    sections instead of sending the same full manuscript to every LTX shot. This is
+    orchestration, not enhancement: no new plot, dialogue, character traits or
+    visual ideas are invented here.
+    """
+    clean_prompt = prompt.strip()
+    target_duration = max(3, min(30, int(round(target_scene_duration_seconds or 5))))
+    character_bible = local_character_bible(clean_prompt)
+    style_bible = local_style_bible(clean_prompt)
+    entity_locks = infer_local_entity_locks(clean_prompt)
+    direct_segments = _direct_story_segments(clean_prompt, max(1, scene_count))
+    style_context = _direct_style_context(clean_prompt)
+    scenes: list[Scene] = []
+    for index, (title, source_segment) in enumerate(direct_segments):
+        transition = (
+            "Continue from the supplied previous frame into this next chronological story segment. "
+            "Do not replay an earlier beat, reset to the opening composition, or re-introduce characters already established."
+            if index > 0
+            else "Render only this opening chronological story segment as one continuous shot."
+        )
+        pieces = []
+        if style_context:
+            pieces.append(f"USER STYLE: {style_context}")
+        pieces.append(f"USER STORY SEGMENT {index + 1}/{len(direct_segments)}: {source_segment}")
+        pieces.append(f"SEQUENCING CONTROL: {transition}")
+        scene_prompt = _limit_words(" ".join(pieces), 190)
+        scenes.append(
+            Scene(
+                id=index + 1,
+                title=title or f"Direct scene {index + 1}",
+                prompt=scene_prompt,
+                duration_seconds=target_duration,
+                # Direct mode does not pretend to semantically understand whether a
+                # name in source text is physically visible, remembered, narrated,
+                # or off-screen. Canonical max locks still protect against clones.
+                visible_entity_counts={},
+            )
+        )
+    return ScenePlanResult(
+        scenes=scenes,
+        source="direct",
+        character_bible=character_bible,
+        style_bible=style_bible,
+        entity_locks=entity_locks,
+        note=(
+            "AI Enhancement is OFF. Gemini planning was skipped. Triven deterministically "
+            "sequences only the user's own story sections across LTX shots so each scene "
+            "advances instead of replaying the full prompt from the beginning."
+        ),
+    )
+
+
 def create_scene_plan(
     prompt: str,
     scene_count: int,
@@ -370,12 +566,12 @@ def create_scene_plan(
     force_ai: bool = False,
     target_scene_duration_seconds: float | None = None,
 ) -> ScenePlanResult:
-    clean_prompt = _compact(prompt)
+    # Preserve headings, dialogue boundaries and paragraph structure for Gemini.
+    # The previous implementation collapsed the full manuscript to one line before
+    # planning, which made screenplay structure much harder to recover.
+    clean_prompt = prompt.strip()
     target_duration = max(3, min(30, int(round(target_scene_duration_seconds or 5))))
 
-    # One scene does not need an LLM round-trip unless the caller explicitly asks
-    # for prompt enhancement. Identity/style locks are still created locally so
-    # the same API contract works for one- and multi-scene storyboards.
     if scene_count == 1 and not force_ai:
         scenes, character_bible, style_bible, entity_locks = _local_storyboard(
             clean_prompt, 1, target_duration_seconds=target_duration
@@ -402,9 +598,9 @@ def create_scene_plan(
             character_bible=character_bible,
             style_bible=style_bible,
             entity_locks=entity_locks,
-            note="Storyboard generated by Gemini with shared identity, entity-count and style locks.",
+            note="Storyboard generated by Gemini with shared identity, entity-count, audio and style locks.",
         )
-    except Exception as exc:  # reliability boundary: rendering must remain usable
+    except Exception as exc:  # preview/debug reliability boundary
         scenes, character_bible, style_bible, entity_locks = _local_storyboard(
             clean_prompt, scene_count, target_duration_seconds=target_duration
         )
@@ -414,5 +610,8 @@ def create_scene_plan(
             character_bible=character_bible,
             style_bible=style_bible,
             entity_locks=entity_locks,
-            note=f"{str(exc)} Triven created an editable continuity-locked local storyboard instead.",
+            note=(
+                f"{str(exc)} Triven used the bounded local PREVIEW fallback. "
+                "Final-quality Factory jobs reject this fallback unless explicitly enabled."
+            ),
         )

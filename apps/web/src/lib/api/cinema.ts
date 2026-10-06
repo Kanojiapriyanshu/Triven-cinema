@@ -62,6 +62,18 @@ async function readApiError(response: Response, fallback: string): Promise<strin
     const data = await response.json();
     if (typeof data?.detail === "string") return data.detail;
     if (typeof data?.detail?.message === "string") return data.detail.message;
+    if (Array.isArray(data?.detail)) {
+      const messages = data.detail
+        .map((item: { loc?: unknown[]; msg?: string }) => {
+          const field = Array.isArray(item?.loc)
+            ? item.loc.filter((part) => part !== "body").join(".")
+            : "";
+          const message = item?.msg || "Invalid value";
+          return field ? `${field}: ${message}` : message;
+        })
+        .filter(Boolean);
+      if (messages.length) return messages.join("\n");
+    }
     return data?.message || fallback;
   } catch {
     return fallback;

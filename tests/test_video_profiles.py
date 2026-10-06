@@ -16,6 +16,12 @@ class VideoProfileTests(unittest.TestCase):
         self.assertEqual(delivery_dimensions("1:1"), (1080, 1080))
         self.assertEqual(delivery_dimensions("16:9", "4k"), (3840, 2160))
 
+    def test_final_source_profiles_use_dfr_aligned_canvases(self):
+        self.assertEqual(source_render_dimensions("16:9", "1080p"), (1920, 1088))
+        self.assertEqual(source_render_dimensions("9:16", "1080p"), (1088, 1920))
+        self.assertEqual(source_render_dimensions("16:9", "4k"), (3840, 2176))
+        self.assertEqual(source_render_dimensions("9:16", "4k"), (2176, 3840))
+
 
 if __name__ == "__main__":
     unittest.main()

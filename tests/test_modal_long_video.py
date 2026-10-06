@@ -45,6 +45,24 @@ class ModalLongVideoTests(unittest.TestCase):
         self.assertNotIn("--chunk-pixel-frames", command)
         self.assertEqual(ltx_worker.temporal_chunk_count(5), 1)
 
+    def test_dfr_uses_production_pipeline_detailing_lora_and_diffusion_vae(self):
+        command = ltx_worker.build_command(
+            prompt="Radha hears the flute beside the Yamuna.",
+            output_path=Path("/tmp/out.mp4"),
+            width=1024,
+            height=576,
+            duration_seconds=8,
+            seed=42,
+            decoder="conv",
+            render_mode="dfr",
+        )
+        joined = " ".join(command)
+        self.assertIn("ltx_pipelines.dfr_pipeline", command)
+        self.assertIn("--detailing-lora", command)
+        self.assertIn("ltx-2.5-22b-ic-lora-pixel-spatial-upscaler-x2-1.0.safetensors", joined)
+        self.assertIn("ltx-2.5-video-vae-bf16.safetensors", joined)
+        self.assertNotIn("--chunk-pixel-frames", command)
+
 
 if __name__ == "__main__":
     unittest.main()

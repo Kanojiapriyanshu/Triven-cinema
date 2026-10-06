@@ -17,9 +17,9 @@ from app.schemas.youtube import YouTubePrivacy
 
 
 class FactoryGenerationRequest(BaseModel):
-    prompt: str = Field(..., min_length=10, max_length=8000)
+    prompt: str = Field(..., min_length=10, max_length=50000)
     target_duration_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
-    scene_duration_seconds: float = Field(default=15.0, ge=1.0, le=30.0)
+    scene_duration_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
     aspect_ratio: AspectRatio = "16:9"
     quality: RenderQuality = "1080p"
     audio_mode: AudioMode = "mastered"
@@ -29,8 +29,8 @@ class FactoryGenerationRequest(BaseModel):
     decoder: DecoderName = "conv"
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
     continuity_mode: ContinuityMode = "strict"
-    continuity_strength: float = Field(default=1.0, ge=0.0, le=1.0)
-    continuity_qc_mode: ContinuityQCMode = "auto"
+    continuity_strength: float = Field(default=0.85, ge=0.0, le=1.0)
+    continuity_qc_mode: ContinuityQCMode = "strict"
     continuity_max_retries: int = Field(default=1, ge=0, le=2)
     enhance_prompt: bool = False
 
@@ -83,6 +83,9 @@ class FactoryGenerationResponse(BaseModel):
     continuity_qc_passed: bool | None = None
     continuity_regenerations: int = 0
     continuity_warnings: list[str] = Field(default_factory=list)
+    audio_qc_passed: bool | None = None
+    audio_retake_count: int = 0
+    audio_warnings: list[str] = Field(default_factory=list)
     youtube_video_id: str | None = None
     youtube_url: str | None = None
     youtube_privacy: Literal["private", "unlisted", "public"] | None = None

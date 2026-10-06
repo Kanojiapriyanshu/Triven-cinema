@@ -114,7 +114,7 @@ export default function Home() {
   const [sceneCount, setSceneCount] = useState(2);
   const [durationSeconds, setDurationSeconds] = useState(15);
   const [factoryTargetSeconds, setFactoryTargetSeconds] = useState(30);
-  const [factorySceneSeconds, setFactorySceneSeconds] = useState(15);
+  const [factorySceneSeconds, setFactorySceneSeconds] = useState(10);
   const [quality, setQuality] = useState<RenderQuality>("1080p");
   const [audioMode, setAudioMode] = useState<AudioMode>("mastered");
   const [audioDirection, setAudioDirection] = useState("Natural synchronized ambience and Foley matching every visible action.");
@@ -153,6 +153,9 @@ export default function Home() {
   const [notice, setNotice] = useState("");
 
   const durationOptions = DURATION_OPTIONS[quality];
+  const factoryDurationOptions = quality === "preview"
+    ? durationOptions
+    : durationOptions.filter((value) => value <= 10);
   const isBusy = planning || directGenerating || factoryGenerating || generatingScene !== null || creatingFinal;
   const renderedSceneCount = Object.keys(renderedVideos).length;
   const allScenesRendered = !!result && result.scenes.length > 0 && result.scenes.every((scene) => Boolean(renderedVideos[scene.id]));
@@ -198,8 +201,9 @@ export default function Home() {
 
   useEffect(() => {
     const options = DURATION_OPTIONS[quality];
+    const factoryOptions = quality === "preview" ? options : options.filter((value) => value <= 10);
     if (!options.includes(durationSeconds)) setDurationSeconds(options[Math.min(2, options.length - 1)]);
-    if (!options.includes(factorySceneSeconds)) setFactorySceneSeconds(options[options.length - 1]);
+    if (!factoryOptions.includes(factorySceneSeconds)) setFactorySceneSeconds(factoryOptions[factoryOptions.length - 1]);
   }, [quality, durationSeconds, factorySceneSeconds]);
 
   function resetOutput() {
@@ -246,7 +250,7 @@ export default function Home() {
       throw new Error("Connect a YouTube channel before enabling automatic publishing.");
     }
     setFactoryGenerating(true);
-    setProgressMessage("Starting the AI video factory...");
+    setProgressMessage(enhancePrompt ? "Starting AI-enhanced video factory..." : "Starting direct story sequencing (no Gemini rewrite)...");
     try {
       const started = await createFactoryGenerationJob({
         prompt: cleanPrompt,
@@ -261,8 +265,8 @@ export default function Home() {
         decoder,
         seed,
         continuity_mode: continuityMode,
-        continuity_strength: 1.0,
-        continuity_qc_mode: "auto",
+        continuity_strength: 0.85,
+        continuity_qc_mode: enhancePrompt && quality !== "preview" ? "strict" : "auto",
         continuity_max_retries: 1,
         enhance_prompt: enhancePrompt,
         publish_to_youtube: publishToYouTube,
@@ -376,7 +380,7 @@ export default function Home() {
       style_bible: result.style_bible,
       entity_locks: result.entity_locks,
       visible_entity_counts: result.scenes[Math.max(sceneIndex, 0)]?.visible_entity_counts || {},
-      continuity_qc_mode: "auto",
+      continuity_qc_mode: quality === "preview" ? "auto" : "strict",
       continuity_max_retries: 1,
       reference_frame_filename: continuityMode === "strict" ? referenceFrameFilename : null,
       continuity_strength: 1.0,
@@ -615,7 +619,7 @@ export default function Home() {
                     </Control>
                     <Control label="Scene runtime">
                       <select className="control w-full" value={factorySceneSeconds} onChange={(e) => setFactorySceneSeconds(Number(e.target.value))}>
-                        {durationOptions.map((value) => <option key={value} value={value}>{value}s / scene</option>)}
+                        {factoryDurationOptions.map((value) => <option key={value} value={value}>{value}s / scene</option>)}
                       </select>
                     </Control>
                   </>
@@ -679,7 +683,8 @@ export default function Home() {
 
               <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-zinc-600">
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={enhancePrompt} onChange={(e) => setEnhancePrompt(e.target.checked)} /> AI prompt enhancement</label>
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={enhancePrompt} onChange={(e) => setEnhancePrompt(e.target.checked)} /> AI Enhancement (Gemini planning + strict AI QC)</label>
+                  <span>{enhancePrompt ? "Gemini creates shot-specific story beats" : "Direct mode sequences your own prompt across shots"}</span>
                   <span>{capabilities ? `Native chunk ${capabilities.native_chunk_seconds}s` : "Long clips chain native LTX segments"}</span>
                   <span>{quality === "4k" ? "4K is a delivery master, not a native-source claim" : "Synchronized LTX audio preserved"}</span>
                 </div>
@@ -741,12 +746,13 @@ export default function Home() {
         )}
 
         {factoryResult && (
-          <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
             <Stat label="Scenes" value={String(factoryResult.scene_count)} detail={`${factoryResult.chunk_count} native LTX chunks`} />
             <Stat label="Runtime" value={`${(factoryResult.actual_duration_seconds ?? factoryResult.target_duration_seconds).toFixed(1)}s`} detail={`${factoryResult.scene_duration_seconds}s target scene`} />
             <Stat label="Delivery" value={qualityLabel(factoryResult.quality)} detail={`${factoryResult.width ?? "?"}×${factoryResult.height ?? "?"} · ${factoryResult.audio_mode}`} />
             <Stat label="Planner" value={factoryResult.planner_source} detail={`${factoryResult.entity_locks.length} entity lock${factoryResult.entity_locks.length === 1 ? "" : "s"}`} />
             <Stat label="Continuity QC" value={factoryResult.continuity_qc_passed === true ? "Passed" : factoryResult.continuity_qc_passed === false ? "Warning" : "Guarded"} detail={`${factoryResult.continuity_regenerations} auto-regeneration${factoryResult.continuity_regenerations === 1 ? "" : "s"}`} />
+            <Stat label="Audio QC" value={factoryResult.audio_qc_passed === true ? "Passed" : factoryResult.audio_qc_passed === false ? "Failed" : "Guarded"} detail={`${factoryResult.audio_retake_count} LTX audio retake${factoryResult.audio_retake_count === 1 ? "" : "s"}`} />
           </section>
         )}
 

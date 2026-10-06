@@ -44,10 +44,11 @@ class HuggingFaceLTXProvider(VideoProvider):
         seed: int = 42,
         decoder: str = "conv",
         enhance_prompt: bool = False,
+        render_mode: str = "distilled",
         reference_image_path: str | None = None,
         reference_strength: float = 0.95,
     ) -> VideoGenerationResult:
-        del reference_image_path, reference_strength  # ZeroGPU fallback does not expose Triven first-frame conditioning.
+        del reference_image_path, reference_strength, render_mode  # ZeroGPU fallback does not expose Triven production controls.
         started = time.perf_counter()
 
         client = Client(self.space, token=self.token)

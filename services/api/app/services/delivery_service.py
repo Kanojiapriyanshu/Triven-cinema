@@ -20,9 +20,9 @@ def quality_note(quality: str, aspect_ratio: str) -> str:
         else:
             delivery = "3840x2160"
         return (
-            f"{delivery} 4K delivery master. The current self-hosted distilled pipeline "
-            "renders the validated LTX source profile first and performs one final delivery "
-            "transcode. This label does not claim native-4K source generation."
+            f"{delivery} 4K delivery master from the LTX-2.5 DFR production path. "
+            "Triven targets the LTX 4K grid (3840x2176 landscape / rotated portrait) "
+            "and performs one final delivery crop/transcode to the requested aspect."
         )
 
     if aspect_ratio == "9:16":
@@ -32,8 +32,8 @@ def quality_note(quality: str, aspect_ratio: str) -> str:
     else:
         delivery = "1920x1080"
     return (
-        f"{delivery} 1080p delivery master. Triven renders the LTX source profile first "
-        "and performs one final delivery transcode."
+        f"{delivery} 1080p delivery master from the LTX-2.5 DFR production path "
+        "using a 1920x1088-class source canvas before the final delivery crop/transcode."
     )
 
 

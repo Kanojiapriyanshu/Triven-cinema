@@ -56,17 +56,16 @@ def render_long_clip(
     seed: int,
     decoder: str,
     enhance_prompt: bool = False,
+    render_mode: str = "distilled",
     reference_image_path: str | None = None,
     reference_strength: float = 0.95,
     progress: ProgressCallback | None = None,
 ) -> VideoGenerationResult:
     """Render a customer-facing long clip with the safest provider strategy.
 
-    The Modal LTX-2.5 worker uses the upstream DistilledPipeline temporal-window
-    mode for long clips, so a 15s/30s customer scene remains one multimodal LTX
-    invocation with overlap/blending between native windows. Providers that do not
-    expose native long-video windowing fall back to application-level continuation
-    chunks when possible.
+    Preview renders may use DistilledPipeline native temporal windows. Production
+    Factory scenes use shorter DFR shots instead; providers that do not expose native
+    long-video windowing fall back to application-level continuation chunks when possible.
     """
     if provider.supports_native_long_video or duration_seconds <= settings.ltx_native_chunk_seconds:
         if progress:
@@ -79,6 +78,7 @@ def render_long_clip(
             seed=seed,
             decoder=decoder,
             enhance_prompt=enhance_prompt,
+            render_mode=render_mode,
             reference_image_path=reference_image_path,
             reference_strength=reference_strength,
         )
@@ -113,6 +113,7 @@ def render_long_clip(
                 seed=seed,
                 decoder=decoder,
                 enhance_prompt=enhance_prompt if index == 0 else False,
+                render_mode=render_mode,
                 reference_image_path=str(current_reference) if current_reference else None,
                 reference_strength=reference_strength,
             )
@@ -148,6 +149,7 @@ def render_long_clip(
                 wall_seconds=total_wall,
                 reference_conditioned=any_conditioned,
                 chunk_count=1,
+                render_mode=last_result.render_mode,
             )
 
         combined = GENERATED_DIR / f"ltx-long-{uuid.uuid4().hex}.mp4"
@@ -171,6 +173,7 @@ def render_long_clip(
             wall_seconds=total_wall,
             reference_conditioned=any_conditioned,
             chunk_count=len(chunks),
+            render_mode=last_result.render_mode,
         )
     finally:
         for frame in temporary_frames:

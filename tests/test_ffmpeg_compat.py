@@ -34,11 +34,11 @@ class FFmpegCompatibilityTests(unittest.TestCase):
                 self.assertNotIn("-vsync", command)
                 self.assertEqual(command[-2], "1")
 
-    def test_continuity_extractor_samples_multiple_near_end_frames(self):
+    def test_continuity_extractor_prefers_frame_closest_to_cut(self):
         source = (ROOT / "services/api/app/services/video_combiner.py").read_text()
         self.assertNotIn('"-vsync"', source)
         self.assertIn("def extract_continuity_frame", source)
-        self.assertIn("0.35, 0.20, 0.08", source)
+        self.assertIn("0.08, 0.14, 0.22, 0.35", source)
 
     def test_continuity_frame_function_is_publicly_callable(self):
         self.assertTrue(callable(extract_continuity_frame))

@@ -1,8 +1,27 @@
 from app.core.config import settings
 
 
-def source_render_dimensions(aspect_ratio: str) -> tuple[int, int]:
-    """Fast/source LTX dimensions, all divisible by 64."""
+def source_render_dimensions(aspect_ratio: str, quality: str = "preview") -> tuple[int, int]:
+    """LTX target dimensions aligned to the active render pipeline.
+
+    Preview stays inexpensive. Final-quality Modal jobs use DFR at a true
+    production canvas: 1920x1088 for 1080-class output and the LTX v1.3.0
+    4K grid (3840x2176) for UHD delivery before the final 16:9 crop.
+    """
+    if quality == "4k":
+        if aspect_ratio == "16:9":
+            return 3840, 2176
+        if aspect_ratio == "9:16":
+            return 2176, 3840
+        return 2176, 2176
+
+    if quality == "1080p":
+        if aspect_ratio == "16:9":
+            return 1920, 1088
+        if aspect_ratio == "9:16":
+            return 1088, 1920
+        return 1088, 1088
+
     if aspect_ratio == "16:9":
         return 1024, 576
     if aspect_ratio == "9:16":

@@ -6,13 +6,14 @@ from typing import Callable
 from app.core.config import settings
 from app.schemas.factory import FactoryGenerationRequest, FactoryGenerationResponse
 from app.schemas.generation import MediaInfo
+from app.services.audio_qc import evaluate_scene_audio
 from app.services.continuity_service import compose_continuity_prompt
 from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
 from app.services.long_render_service import render_long_clip
 from app.services.media_probe import probe_media
 from app.services.metrics_service import estimate_gpu_cost, record_generation_metric
-from app.services.scene_planner import create_scene_plan
+from app.services.scene_planner import create_prompt_only_plan, create_scene_plan
 from app.services.storage_service import ensure_minimum_free_disk
 from app.services.video_combiner import combine_videos, extract_continuity_frame
 from app.services.video_profiles import source_render_dimensions, validate_scene_duration
@@ -24,6 +25,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 GENERATED_DIR = (PROJECT_ROOT / "storage" / "generated").resolve()
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 ProgressCallback = Callable[[str, int, str], None]
+
+
+def _scene_seed(base_seed: int, scene_index: int, attempt: int = 0) -> int:
+    """Return a deterministic but different seed for every scene/retry.
+
+    Reusing the same seed with the same or similar prompt at every 10-second Factory
+    boundary strongly biases LTX toward replaying the same composition. First-frame
+    conditioning carries identity; the seed should not also freeze scene layout.
+    """
+    modulus = 2_147_483_648
+    return (int(base_seed) + int(scene_index) * 104_729 + int(attempt) * 7_919) % modulus
 
 
 def _audio_prompt(prompt: str, audio_direction: str | None) -> str:
@@ -62,14 +74,19 @@ def run_factory_generation(
         raise ValueError(
             f"Factory jobs are limited to {settings.max_factory_duration_seconds}s on this deployment."
         )
+    # Character-heavy final renders are deliberately decomposed into shorter shots.
+    # Long clips amplify face/body drift and make exact dialogue harder to control.
+    effective_scene_seconds = float(request.scene_duration_seconds)
+    if request.quality != "preview":
+        effective_scene_seconds = min(effective_scene_seconds, float(settings.cinema_max_scene_seconds))
     validate_scene_duration(
         quality=request.quality,
-        duration_seconds=request.scene_duration_seconds,
+        duration_seconds=effective_scene_seconds,
     )
-    if request.provider != "modal" and request.scene_duration_seconds > settings.ltx_native_chunk_seconds:
+    if request.provider != "modal" and effective_scene_seconds > settings.ltx_native_chunk_seconds:
         raise ValueError("Long factory scenes currently require the Modal LTX provider.")
 
-    scene_count = max(1, math.ceil(request.target_duration_seconds / request.scene_duration_seconds))
+    scene_count = max(1, math.ceil(request.target_duration_seconds / effective_scene_seconds))
     if scene_count > 20:
         raise ValueError(
             "This factory job would require more than 20 story scenes. Increase scene duration or reduce total duration."
@@ -77,16 +94,38 @@ def run_factory_generation(
 
     if progress:
         progress("planning", 8, f"Planning {scene_count} identity/cardinality-locked scenes...")
-    plan = create_scene_plan(
-        prompt=request.prompt,
-        scene_count=scene_count,
-        aspect_ratio=request.aspect_ratio,
-        force_ai=request.enhance_prompt,
-        target_scene_duration_seconds=request.scene_duration_seconds,
-    )
+    if request.enhance_prompt:
+        plan = create_scene_plan(
+            prompt=request.prompt,
+            scene_count=scene_count,
+            aspect_ratio=request.aspect_ratio,
+            force_ai=True,
+            target_scene_duration_seconds=effective_scene_seconds,
+        )
+    else:
+        plan = create_prompt_only_plan(
+            prompt=request.prompt,
+            scene_count=scene_count,
+            target_scene_duration_seconds=effective_scene_seconds,
+        )
+
+    if (
+        request.enhance_prompt
+        and request.quality != "preview"
+        and plan.source == "fallback"
+        and not settings.factory_allow_fallback_final
+    ):
+        raise RuntimeError(
+            "Final-quality Factory planning could not use Gemini after retries/failover. "
+            "The local fallback is intentionally blocked before GPU rendering because it "
+            "cannot safely guarantee named-character continuity for this job. Retry when "
+            "Gemini is available, or use Preview if you explicitly want fallback planning."
+        )
 
     provider = get_video_provider(request.provider, model=request.model)
-    width, height = source_render_dimensions(request.aspect_ratio)
+    render_mode = "dfr" if request.quality != "preview" and request.provider == "modal" else "distilled"
+    effective_decoder = "diffusion" if render_mode == "dfr" else request.decoder
+    width, height = source_render_dimensions(request.aspect_ratio, request.quality)
     continuity_id = f"factory-{uuid.uuid4().hex[:16]}"
     source_paths: list[Path] = []
     render_details: list[str] = []
@@ -101,10 +140,14 @@ def run_factory_generation(
     continuity_regenerations = 0
     qc_attempted = False
     all_qc_passed = True
+    audio_qc_attempted = False
+    all_audio_qc_passed = True
+    audio_retake_count = 0
+    audio_warnings: list[str] = []
 
     try:
         for index, scene in enumerate(plan.scenes):
-            duration = min(float(request.scene_duration_seconds), remaining)
+            duration = min(effective_scene_seconds, remaining)
             remaining = max(0.0, remaining - duration)
             if duration < 1.0:
                 break
@@ -125,10 +168,16 @@ def run_factory_generation(
             accepted_path: Path | None = None
             last_qc_note = ""
             attempts = max(0, int(request.continuity_max_retries)) + 1
+            # Prompt-only Factory mode must not rewrite the user's prompt. Strict
+            # continuity still benefits from first-frame conditioning; Gemini-backed
+            # QC becomes advisory if the service is unavailable.
+            effective_qc_mode = request.continuity_qc_mode
+            if not request.enhance_prompt and effective_qc_mode == "strict":
+                effective_qc_mode = "auto"
 
             for attempt in range(attempts):
                 locked_prompt = scene.prompt
-                if request.continuity_mode != "off":
+                if request.enhance_prompt and request.continuity_mode != "off":
                     locked_prompt = compose_continuity_prompt(
                         scene_prompt=locked_prompt,
                         character_bible=plan.character_bible,
@@ -158,9 +207,10 @@ def run_factory_generation(
                     width=width,
                     height=height,
                     duration_seconds=duration,
-                    seed=request.seed,
-                    decoder=request.decoder,
+                    seed=_scene_seed(request.seed, index, attempt),
+                    decoder=effective_decoder,
                     enhance_prompt=False,
+                    render_mode=render_mode,
                     reference_image_path=(
                         str(previous_frame)
                         if request.continuity_mode == "strict" and previous_frame is not None
@@ -177,7 +227,7 @@ def run_factory_generation(
                 gpu = result.gpu or gpu
 
                 qc = None
-                if request.continuity_mode != "off" and request.continuity_qc_mode != "off":
+                if request.continuity_mode != "off" and effective_qc_mode != "off":
                     if progress:
                         progress(
                             "rendering",
@@ -190,10 +240,15 @@ def run_factory_generation(
                         visible_entity_counts=scene.visible_entity_counts,
                         character_bible=plan.character_bible,
                         scene_prompt=locked_prompt,
-                        qc_mode=request.continuity_qc_mode,
+                        qc_mode=effective_qc_mode,
+                        reference_frame_path=(
+                            previous_frame
+                            if request.continuity_mode == "strict" and previous_frame is not None
+                            else None
+                        ),
                     )
                     qc_attempted = qc_attempted or not qc.skipped
-                    if qc.skipped and request.continuity_qc_mode == "strict":
+                    if qc.skipped and effective_qc_mode == "strict":
                         path.unlink(missing_ok=True)
                         raise RuntimeError(
                             f"Scene {index + 1} strict continuity QC could not run: {qc.note}"
@@ -213,7 +268,7 @@ def run_factory_generation(
                     continue
 
                 message = f"Scene {index + 1} continuity QC failed after {attempts} attempt(s): {last_qc_note}"
-                if request.continuity_qc_mode == "strict":
+                if effective_qc_mode == "strict":
                     path.unlink(missing_ok=True)
                     raise RuntimeError(message)
                 all_qc_passed = False
@@ -223,6 +278,95 @@ def run_factory_generation(
 
             if accepted_result is None or accepted_path is None:
                 raise RuntimeError(f"Scene {index + 1} did not produce an accepted render.")
+
+            # Semantic audio QC happens before loudness mastering. Mastering cannot
+            # repair gibberish; on Modal we get one LTX audio-only Retake and recheck.
+            if request.audio_mode != "mute" and settings.factory_audio_qc_enabled:
+                if progress:
+                    progress(
+                        "rendering",
+                        min(79, base_progress + max(3, 64 // max(1, scene_count))),
+                        f"Scene {index + 1}/{scene_count} · checking generated speech/audio...",
+                    )
+                audio_qc = evaluate_scene_audio(
+                    accepted_path,
+                    scene_prompt=locked_prompt,
+                    audio_direction=request.audio_direction,
+                )
+                audio_qc_attempted = audio_qc_attempted or not audio_qc.skipped
+                strict_audio = (
+                    request.enhance_prompt
+                    and request.quality != "preview"
+                    and settings.factory_audio_qc_strict_final
+                )
+
+                if audio_qc.skipped and strict_audio:
+                    accepted_path.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"Scene {index + 1} final audio QC could not run: {audio_qc.note}"
+                    )
+
+                if not audio_qc.skipped and not audio_qc.passed:
+                    audio_note = audio_qc.note or "; ".join(audio_qc.violations) or "generated audio failed semantic QC"
+                    if provider.supports_audio_retake and settings.factory_audio_retake_enabled:
+                        if progress:
+                            progress(
+                                "rendering",
+                                min(79, base_progress + max(4, 65 // max(1, scene_count))),
+                                f"Scene {index + 1}/{scene_count} · LTX audio-only Retake...",
+                            )
+                        retake_prompt = (
+                            f"{locked_prompt}\n\n[AUDIO RETAKE] Regenerate only the requested clean audio for this exact shot. "
+                            "Preserve the video. Never invent speech. No gibberish, fake language, random chanting, "
+                            "background conversation, duplicate voices, or speech-like vocal noise. If dialogue is "
+                            "quoted in the shot, speak only those exact words clearly; otherwise use ambience/Foley/music only."
+                        )
+                        retake = provider.retake_audio(
+                            video_path=str(accepted_path),
+                            prompt=retake_prompt,
+                            duration_seconds=duration,
+                            seed=request.seed + audio_retake_count,
+                        )
+                        retake_path = Path(retake.path)
+                        total_render += float(retake.render_seconds)
+                        total_wall += float(retake.wall_seconds or retake.render_seconds)
+                        total_chunks += int(retake.chunk_count or 1)
+                        gpu = retake.gpu or gpu
+                        audio_retake_count += 1
+                        accepted_path.unlink(missing_ok=True)
+                        accepted_path = retake_path
+                        render_details.append(retake.render_details)
+
+                        audio_qc = evaluate_scene_audio(
+                            accepted_path,
+                            scene_prompt=locked_prompt,
+                            audio_direction=request.audio_direction,
+                        )
+                        audio_qc_attempted = audio_qc_attempted or not audio_qc.skipped
+                        if audio_qc.skipped and strict_audio:
+                            accepted_path.unlink(missing_ok=True)
+                            raise RuntimeError(
+                                f"Scene {index + 1} audio Retake could not be rechecked: {audio_qc.note}"
+                            )
+                        if not audio_qc.skipped and not audio_qc.passed:
+                            all_audio_qc_passed = False
+                            final_note = audio_qc.note or "; ".join(audio_qc.violations) or audio_note
+                            if strict_audio:
+                                accepted_path.unlink(missing_ok=True)
+                                raise RuntimeError(
+                                    f"Scene {index + 1} audio still failed after LTX Retake: {final_note}"
+                                )
+                            audio_warnings.append(f"Scene {index + 1}: {final_note}")
+                    else:
+                        all_audio_qc_passed = False
+                        if strict_audio:
+                            accepted_path.unlink(missing_ok=True)
+                            raise RuntimeError(
+                                f"Scene {index + 1} audio QC failed and audio Retake is unavailable: {audio_note}"
+                            )
+                        audio_warnings.append(f"Scene {index + 1}: {audio_note}")
+                elif audio_qc.skipped and audio_qc.note:
+                    audio_warnings.append(f"Scene {index + 1}: {audio_qc.note}")
 
             source_paths.append(accepted_path)
             render_details.append(accepted_result.render_details)
@@ -293,7 +437,7 @@ def run_factory_generation(
                 "scene_count": len(source_paths),
                 "chunk_count": total_chunks,
                 "target_duration_seconds": request.target_duration_seconds,
-                "scene_duration_seconds": request.scene_duration_seconds,
+                "scene_duration_seconds": effective_scene_seconds,
                 "render_seconds": round(total_render, 3),
                 "wall_seconds": round(total_wall, 3),
                 "quality": request.quality,
@@ -304,6 +448,10 @@ def run_factory_generation(
                 "continuity_qc_passed": qc_passed,
                 "continuity_regenerations": continuity_regenerations,
                 "continuity_warning_count": len(continuity_warnings),
+                "audio_qc_passed": (all_audio_qc_passed if audio_qc_attempted else None),
+                "audio_retake_count": audio_retake_count,
+                "audio_warning_count": len(audio_warnings),
+                "render_mode": render_mode,
                 "estimated_cost_usd": estimated_cost,
                 "estimated_cost_per_output_minute_usd": cost_per_minute,
                 "youtube_published": bool(youtube_url),
@@ -318,7 +466,7 @@ def run_factory_generation(
             target_duration_seconds=request.target_duration_seconds,
             actual_duration_seconds=info.duration_seconds,
             scene_count=len(source_paths),
-            scene_duration_seconds=request.scene_duration_seconds,
+            scene_duration_seconds=effective_scene_seconds,
             aspect_ratio=request.aspect_ratio,
             quality=request.quality,
             quality_note=quality_note(request.quality, request.aspect_ratio),
@@ -342,6 +490,9 @@ def run_factory_generation(
             continuity_qc_passed=qc_passed,
             continuity_regenerations=continuity_regenerations,
             continuity_warnings=continuity_warnings,
+            audio_qc_passed=(all_audio_qc_passed if audio_qc_attempted else None),
+            audio_retake_count=audio_retake_count,
+            audio_warnings=audio_warnings,
             youtube_video_id=youtube_video_id,
             youtube_url=youtube_url,
             youtube_privacy=youtube_privacy,

@@ -3,20 +3,22 @@ import json
 import tempfile
 from pathlib import Path
 
-import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.config import settings
 from app.schemas.generation import EntityLock
 from app.services.continuity_service import compact_text, normalize_entity_locks
+from app.services.gemini_service import generate_content
 from app.services.video_combiner import extract_qc_frames
 
 
 class ContinuityQCResult(BaseModel):
     passed: bool = True
     duplicate_detected: bool = False
+    identity_drift_detected: bool = False
     observed_max_counts: dict[str, int] = Field(default_factory=dict)
     violations: list[str] = Field(default_factory=list)
+    identity_violations: list[str] = Field(default_factory=list)
     note: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     skipped: bool = False
@@ -27,7 +29,12 @@ def _extract_json_text(payload: dict) -> str:
     if not candidates:
         raise RuntimeError("Gemini continuity QC returned no candidates.")
     parts = ((candidates[0].get("content") or {}).get("parts") or [])
-    text = "".join(str(part.get("text") or "") for part in parts).strip()
+    text_parts = [
+        str(part.get("text") or "")
+        for part in parts
+        if not part.get("thought")
+    ]
+    text = "".join(text_parts).strip()
     if text.startswith("```"):
         text = text.removeprefix("```json").removeprefix("```").strip()
         if text.endswith("```"):
@@ -41,6 +48,21 @@ def _skipped(note: str) -> ContinuityQCResult:
     return ContinuityQCResult(passed=True, skipped=True, note=note, confidence=0.0)
 
 
+def _image_part(path: Path) -> dict:
+    suffix = path.suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(suffix, "image/png")
+    return {
+        "inlineData": {
+            "mimeType": mime,
+            "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+        }
+    }
+
+
 def evaluate_scene_cardinality(
     video_path: Path,
     *,
@@ -49,12 +71,13 @@ def evaluate_scene_cardinality(
     character_bible: str | None,
     scene_prompt: str,
     qc_mode: str = "auto",
+    reference_frame_path: Path | None = None,
 ) -> ContinuityQCResult:
-    """Inspect representative frames for obvious duplicate recurring subjects.
+    """Inspect frames for duplicate subjects *and* recurring-character identity drift.
 
-    This is a quality-control gate, not an identity recognition system. It is
-    intentionally conservative: fail only when the sampled frames show a clear
-    extra physical instance or an obvious clone of a recurring subject.
+    When a previous approved frame is available it becomes the identity reference for
+    the current shot. This makes QC answer both questions that matter for narrative
+    continuity: "how many?" and "is this still the same character?".
     """
     if qc_mode == "off":
         return _skipped("Continuity vision QC disabled for this request.")
@@ -76,10 +99,11 @@ def evaluate_scene_cardinality(
     else:
         exact = "No exact per-shot counts supplied; enforce canonical maximums and reject obvious clones."
 
+    has_reference = bool(reference_frame_path and reference_frame_path.exists())
     prompt = f"""
-You are Triven Cinema's continuity/cardinality quality-control inspector.
-The attached images are THREE SAMPLED FRAMES FROM THE SAME GENERATED VIDEO CLIP.
-Judge physical subject count WITHIN EACH INDIVIDUAL FRAME. Do not count the same subject across different frames as multiple.
+You are Triven Cinema's strict visual continuity inspector.
+The generated clip is represented by sampled frames attached after this instruction.
+{('The FIRST attached image is the PREVIOUS APPROVED CONTINUITY REFERENCE. It is NOT a sample from the new clip. Compare recurring characters in the new samples against it.' if has_reference else 'No previous reference image is available for this first shot; evaluate cardinality, anatomy, and consistency within the sampled clip.')}
 
 CANONICAL ENTITY LOCKS:
 {chr(10).join(lock_lines) if lock_lines else 'No structured locks available. Use the character bible and reject obvious duplicate copies of the same recurring subject.'}
@@ -94,20 +118,23 @@ SCENE INTENT:
 {compact_text(scene_prompt, 1800)}
 
 QC RULES:
-- A recurring physical subject must not appear as two copies, twins, mirrored physical duplicates, extra bodies, extra heads/faces, or a ghost clone.
-- Do NOT count a normal shadow as another subject.
-- Do NOT count a clearly readable mirror/window reflection as another physical instance.
-- If a reflection visually looks like an unexplained second physical character and is ambiguous, flag it.
-- For an entity with expected/visible count 1, two simultaneously visible physical instances is a failure.
-- Ignore tiny background strangers unless they are a look-alike duplicate of the locked recurring subject.
-- Be conservative: only fail when the duplicate/cardinality problem is visually clear.
+- Count physical subjects WITHIN each individual generated frame; never add counts across different frames.
+- A recurring subject must not appear as twins, mirrored physical duplicates, extra bodies, extra heads/faces, split bodies, fused people, or ghost clones.
+- Do not count a normal shadow or a clearly readable reflection as another physical subject.
+- For an expected count of 1, two simultaneously visible physical instances is a failure.
+- If a previous approved reference exists, recurring named characters must preserve the same recognizable facial identity, age band, skin tone, hair, costume palette, body proportions, and signature props unless the scene explicitly calls for a justified change.
+- A face replacement, unexplained costume/body redesign, one named character turning into another, or strong identity drift is a failure.
+- Ignore tiny unrelated background strangers unless they duplicate a locked recurring subject.
+- Be conservative about ordinary motion blur, pose changes, expression changes, lighting, and camera perspective. Only flag identity drift when it is visually meaningful.
 
 Return ONLY JSON with exactly this shape:
 {{
   "passed": true,
   "duplicate_detected": false,
+  "identity_drift_detected": false,
   "observed_max_counts": {{"ENTITY": 1}},
   "violations": [],
+  "identity_violations": [],
   "note": "short reason",
   "confidence": 0.95,
   "skipped": false
@@ -125,40 +152,30 @@ Return ONLY JSON with exactly this shape:
             return _skipped("No QC frames could be extracted from the generated clip.")
 
         parts: list[dict] = [{"text": prompt}]
+        if has_reference and reference_frame_path is not None:
+            parts.append({"text": "PREVIOUS APPROVED CONTINUITY REFERENCE:"})
+            parts.append(_image_part(reference_frame_path))
+            parts.append({"text": "GENERATED CLIP SAMPLES:"})
         for frame in frames:
-            parts.append(
-                {
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": base64.b64encode(frame.read_bytes()).decode("ascii"),
-                    }
-                }
-            )
+            parts.append(_image_part(frame))
 
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{settings.gemini_model}:generateContent"
-        )
         try:
-            response = httpx.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json={
-                    "contents": [{"parts": parts}],
-                    "generationConfig": {
-                        "responseMimeType": "application/json",
-                        "maxOutputTokens": 1200,
-                    },
-                },
-                timeout=httpx.Timeout(settings.continuity_qc_timeout_seconds),
+            response = generate_content(
+                parts=parts,
+                max_output_tokens=1400,
+                timeout_seconds=settings.continuity_qc_timeout_seconds,
+                thinking_level="low",
             )
-            if response.status_code != 200:
-                return _skipped(f"Continuity vision QC returned HTTP {response.status_code}; prompt guard remains active.")
-            parsed = ContinuityQCResult.model_validate_json(_extract_json_text(response.json()))
-        except (httpx.HTTPError, RuntimeError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+            parsed = ContinuityQCResult.model_validate_json(_extract_json_text(response.payload))
+        except (RuntimeError, ValueError, json.JSONDecodeError, ValidationError) as exc:
             return _skipped(f"Continuity vision QC unavailable ({str(exc)[:180]}). Prompt guard remains active.")
 
-    # Never trust a model-produced pass when it simultaneously reports a duplicate.
-    if parsed.duplicate_detected or parsed.violations:
+    # Never trust a model-produced pass if the same payload reports a hard violation.
+    if (
+        parsed.duplicate_detected
+        or parsed.identity_drift_detected
+        or parsed.violations
+        or parsed.identity_violations
+    ):
         parsed.passed = False
     return parsed

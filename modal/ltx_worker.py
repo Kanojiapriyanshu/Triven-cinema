@@ -4,6 +4,7 @@ from pathlib import Path
 
 from models import (
     AUDIO_VAE,
+    DETAILING_LORA,
     SPATIAL_UPSCALER,
     TEXT_ENCODER,
     TRANSFORMER,
@@ -22,13 +23,9 @@ def frames_for_duration(duration_seconds: float, fps: int = 24) -> int:
     return blocks * 8 + 1
 
 
-
-
-# LTX-2.5 Distilled supports native temporal windowing for long video.
-# Use LTX upstream's conservative 97-pixel-frame window with 25-frame carry.
-# Shorter windows reduce long-shot subject drift/cardinality errors while the
-# carry overlap keeps motion/audio continuity inside one native LTX invocation.
-# Both values stay on the required causal frame grid.
+# DistilledPipeline supports native temporal windowing for long video. Final
+# Cinema renders intentionally stay <=10s and use DFR instead of depending on
+# very long windows for character-heavy narrative shots.
 LONG_VIDEO_PIXEL_FRAMES = 97
 LONG_VIDEO_CARRY_FRAMES = 25
 LONG_VIDEO_MIN_DURATION_SECONDS = 10.0
@@ -41,9 +38,6 @@ def temporal_chunk_count(
     pixel_frames: int = LONG_VIDEO_PIXEL_FRAMES,
     carry_frames: int = LONG_VIDEO_CARRY_FRAMES,
 ) -> int:
-    # Keep normal short shots in a single native window. The explicit chunk
-    # controls are reserved for genuinely long clips, where drift/cardinality
-    # pressure is higher and temporal carry becomes useful.
     if duration_seconds <= LONG_VIDEO_MIN_DURATION_SECONDS:
         return 1
     total_frames = frames_for_duration(duration_seconds, fps=fps)
@@ -62,15 +56,16 @@ def build_command(
     duration_seconds: float,
     seed: int,
     decoder: str,
+    render_mode: str = "distilled",
     reference_image_path: Path | None = None,
     reference_strength: float = 0.95,
 ) -> list[str]:
-    video_vae = (
-        VIDEO_VAE_DIFFUSION
-        if decoder == "diffusion"
-        else VIDEO_VAE_CONV
-    )
+    mode = (render_mode or "distilled").strip().lower()
+    if mode not in {"distilled", "dfr"}:
+        raise ValueError(f"Unsupported LTX render mode: {render_mode}")
 
+    # Production DFR needs the diffusion decoder. Preview can still use conv.
+    video_vae = VIDEO_VAE_DIFFUSION if (mode == "dfr" or decoder == "diffusion") else VIDEO_VAE_CONV
     num_frames = frames_for_duration(duration_seconds)
 
     command = [
@@ -78,7 +73,7 @@ def build_command(
         "run",
         "python",
         "-m",
-        "ltx_pipelines.distilled",
+        "ltx_pipelines.dfr_pipeline" if mode == "dfr" else "ltx_pipelines.distilled",
         "--transformer-path",
         str(TRANSFORMER),
         "--text-encoder-path",
@@ -105,10 +100,18 @@ def build_command(
         prompt,
     ]
 
-    # For >10s clips use LTX's own temporal windowing inside one inference
-    # invocation. This keeps the multimodal latent/audio context in one pipeline
-    # run and lets LTX blend the overlap between windows.
-    if duration_seconds > LONG_VIDEO_MIN_DURATION_SECONDS:
+    if mode == "dfr":
+        command.extend(
+            [
+                "--detailing-lora",
+                str(DETAILING_LORA),
+                "--spatial-upscalings",
+                "2" if max(width, height) >= 3000 else "1",
+                "--temporal-upscalings",
+                "0",
+            ]
+        )
+    elif duration_seconds > LONG_VIDEO_MIN_DURATION_SECONDS:
         command.extend(
             [
                 "--chunk-pixel-frames",
@@ -118,19 +121,20 @@ def build_command(
             ]
         )
 
-    # LTX-2 image conditioning syntax is:
-    #   --image PATH FRAME_IDX STRENGTH [CRF]
-    # Frame 0 is a first-frame latent replacement/conditioning anchor, giving
-    # the next clip a real visual continuation instead of another independent T2V sample.
+    # DFR and Distilled both support image-to-video conditioning. Once this is
+    # supplied, the application prompt describes the next action/change rather
+    # than replaying the whole character bible into every continuation shot.
     if reference_image_path is not None:
         strength = max(0.0, min(1.0, float(reference_strength)))
-        command.extend([
-            "--image",
-            str(reference_image_path),
-            "0",
-            f"{strength:.3f}",
-            "0",  # lossless continuity anchor; avoids needless SDR recompression drift
-        ])
+        command.extend(
+            [
+                "--image",
+                str(reference_image_path),
+                "0",
+                f"{strength:.3f}",
+                "0",
+            ]
+        )
 
     return command
 
@@ -142,8 +146,5 @@ def run_ltx_command(command: list[str]) -> None:
         capture_output=True,
         text=True,
     )
-
     if process.returncode != 0:
-        raise RuntimeError(
-            "LTX-2.5 inference failed:\n" + process.stderr[-8000:]
-        )
+        raise RuntimeError("LTX-2.5 inference failed:\n" + process.stderr[-8000:])
