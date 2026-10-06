@@ -44,3 +44,19 @@ Continuity frame extraction does not use the removed/deprecated `-vsync` option.
 ## Known limitation
 
 No generative model can guarantee zero duplication in every possible composition. Triven therefore treats continuity as a controlled generation + validation problem. For high-value final renders, use strict continuity + strict QC and reject/regenerate any scene that violates canonical subject count.
+
+## Element identity layer
+
+Previous-frame continuity and Element identity now solve different problems:
+
+```text
+canonical @Element reference -> WHO / WHAT must remain the same
+previous approved frame      -> WHERE / POSE / MOTION state continues from
+scene prompt                  -> WHAT happens next
+```
+
+A scene that uses `@Radha` stores the concrete Element version bound to the render. Editing `@Radha` later creates another immutable version and cannot silently mutate an existing job.
+
+For multi-reference scenes, Triven composes a clean black-background reference sheet and invokes LTX-2.5 Ingredients IC-LoRA. For exact-image animation, Triven uses first-frame image conditioning. Visual continuity QC receives the canonical Element references as well as generated frames so it can detect cumulative identity drift instead of only comparing scene N with scene N-1.
+
+The current production defaults intentionally expose a model-safe active-Element cap. Raise `ELEMENT_MAX_ACTIVE_PER_SCENE` only after benchmarking the deployed B200/Ingredients profile; a UI that can browse many library assets does not imply every asset should be injected into one LTX conditioning sheet.

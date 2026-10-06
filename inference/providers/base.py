@@ -37,6 +37,8 @@ class VideoProvider(ABC):
         render_mode: str = "distilled",
         reference_image_path: str | None = None,
         reference_strength: float = 0.95,
+        element_reference_sheet_path: str | None = None,
+        element_reference_strength: float = 1.0,
     ) -> VideoGenerationResult:
         raise NotImplementedError
 

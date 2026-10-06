@@ -298,3 +298,7 @@ See `docs/AI_VIDEO_FACTORY.md` for the long-form LTX profile, audio pipeline, St
 ## Continuity & cardinality engine
 
 Strict story continuity now combines character/style bibles, physical entity-count locks, lossless first-frame conditioning, stable near-end anchor selection, long-shot temporal carry, vision QC and bounded auto-regeneration. See `docs/CONTINUITY_ENGINE.md` for the production behavior and failure-handling rules.
+
+### Reusable Elements / Cinema Studio workflow
+
+The web studio supports reusable characters, props, locations and styles with `@mentions`, protected multi-image references, immutable Element versions, exact-start-frame or identity-reference modes, and a Director's Panel for camera/lens/look controls. See `docs/AI_VIDEO_FACTORY.md` and `docs/CONTINUITY_ENGINE.md` for the generation mapping.

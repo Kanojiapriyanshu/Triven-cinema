@@ -47,8 +47,13 @@ class HuggingFaceLTXProvider(VideoProvider):
         render_mode: str = "distilled",
         reference_image_path: str | None = None,
         reference_strength: float = 0.95,
+        element_reference_sheet_path: str | None = None,
+        element_reference_strength: float = 1.0,
     ) -> VideoGenerationResult:
         del reference_image_path, reference_strength, render_mode  # ZeroGPU fallback does not expose Triven production controls.
+        if element_reference_sheet_path:
+            raise ValueError("Reusable Element reference conditioning currently requires the Modal LTX provider.")
+        del element_reference_strength
         started = time.perf_counter()
 
         client = Client(self.space, token=self.token)

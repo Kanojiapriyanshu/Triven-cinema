@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.elements import ElementBinding
+
 
 AspectRatio = Literal["16:9", "9:16", "1:1"]
 RenderQuality = Literal["preview", "1080p", "4k"]
@@ -97,6 +99,7 @@ class VideoGenerationRequest(BaseModel):
     continuity_max_retries: int = Field(default=1, ge=0, le=2)
     reference_frame_filename: str | None = Field(default=None, max_length=255)
     continuity_strength: float = Field(default=1.0, ge=0.0, le=1.0)
+    element_bindings: list[ElementBinding] = Field(default_factory=list, max_length=20)
 
 
 class MediaInfo(BaseModel):
@@ -138,6 +141,8 @@ class VideoGenerationResponse(BaseModel):
     continuity_qc_passed: bool | None = None
     continuity_regenerations: int = 0
     continuity_warnings: list[str] = Field(default_factory=list)
+    elements_used: list[str] = Field(default_factory=list)
+    element_reference_mode: str | None = None
 
 
 class FullVideoScene(BaseModel):
@@ -166,6 +171,7 @@ class FullVideoGenerationRequest(BaseModel):
     continuity_qc_mode: ContinuityQCMode = "auto"
     continuity_max_retries: int = Field(default=1, ge=0, le=2)
     continuity_strength: float = Field(default=1.0, ge=0.0, le=1.0)
+    element_bindings: list[ElementBinding] = Field(default_factory=list, max_length=20)
 
 
 class FullVideoGenerationResponse(BaseModel):
@@ -224,9 +230,11 @@ class GenerationCapabilitiesResponse(BaseModel):
     async_jobs: bool
     audio_probe: bool
     cost_tracking_configured: bool
+    gpu: str | None = None
     production_mode: bool = False
     job_workers: int = 1
     job_max_pending: int = 3
+    elements: dict | None = None
 
 
 class AsyncVideoGenerationResponse(BaseModel):

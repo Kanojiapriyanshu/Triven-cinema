@@ -59,6 +59,8 @@ def render_long_clip(
     render_mode: str = "distilled",
     reference_image_path: str | None = None,
     reference_strength: float = 0.95,
+    element_reference_sheet_path: str | None = None,
+    element_reference_strength: float = 1.0,
     progress: ProgressCallback | None = None,
 ) -> VideoGenerationResult:
     """Render a customer-facing long clip with the safest provider strategy.
@@ -81,6 +83,8 @@ def render_long_clip(
             render_mode=render_mode,
             reference_image_path=reference_image_path,
             reference_strength=reference_strength,
+            element_reference_sheet_path=element_reference_sheet_path,
+            element_reference_strength=element_reference_strength,
         )
 
     chunks = split_duration(duration_seconds)
@@ -116,6 +120,8 @@ def render_long_clip(
                 render_mode=render_mode,
                 reference_image_path=str(current_reference) if current_reference else None,
                 reference_strength=reference_strength,
+                element_reference_sheet_path=element_reference_sheet_path,
+                element_reference_strength=element_reference_strength,
             )
             last_result = result
             path = Path(result.path)

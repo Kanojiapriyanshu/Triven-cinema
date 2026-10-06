@@ -8,9 +8,10 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from app.api.routes import billing, factory, generations, health, youtube
+from app.api.routes import billing, elements, factory, generations, health, youtube
 from app.core.config import settings
 from app.services.billing_service import initialize_billing_store
+from app.services.element_service import initialize_element_store
 from app.services.identity_service import (
     WORKSPACE_HEADER,
     ensure_workspace,
@@ -38,6 +39,7 @@ for directory in (STORAGE_DIR, GENERATED_DIR, LOGS_DIR):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_job_store()
+    initialize_element_store()
     initialize_billing_store()
     initialize_youtube_store()
     LOGGER.info(
@@ -68,7 +70,7 @@ if settings.cors_origin_list:
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "X-Request-ID", WORKSPACE_HEADER],
         expose_headers=[WORKSPACE_HEADER],
     )
@@ -143,6 +145,7 @@ async def generated_media(filename: str, request: Request):
 app.include_router(health.router, prefix="/api/v1/health", tags=["Health"])
 app.include_router(generations.router, prefix="/api/v1/generations", tags=["Generations"])
 app.include_router(factory.router, prefix="/api/v1/factory", tags=["Factory"])
+app.include_router(elements.router, prefix="/api/v1/elements", tags=["Elements"])
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
 app.include_router(youtube.router, prefix="/api/v1/youtube", tags=["YouTube"])
 

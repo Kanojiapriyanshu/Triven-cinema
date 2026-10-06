@@ -183,3 +183,37 @@ No LTX model redownload is required for the temporal-window change.
 This patch is a strong single-VPS production core, but do not call it horizontally scalable enterprise infrastructure yet.
 
 Before a broad multi-tenant launch, migrate SQLite job/billing/integration state to Postgres, move generated media to S3/R2, move the in-process queue to Redis/SQS/another durable worker queue, and add account authentication/RBAC so customers can recover their workspace across browsers/devices. The signed workspace cookie in this patch isolates the current browser and protects billing/YouTube state, but it is not a full enterprise identity system.
+
+## Cinema Studio workspace and reusable Elements
+
+Triven Cinema now uses a studio-first workflow instead of treating the prompt as the only source of identity.
+
+### Workspace flow
+
+```text
+Create / My Elements / Takes
+          -> Scene canvas
+          -> Characters + References
+          -> @Element scene prompt
+          -> Director's Panel (Scene / Camera / Look / Elements)
+          -> LTX-2.5 render
+```
+
+The browser exposes reusable `character`, `prop`, `location`, and `style` Elements. Each Element owns immutable versions and one or more protected reference images. The user can insert an Element into the prompt by typing `@`, selecting it from the reference picker, or choosing it from My Elements.
+
+The UI deliberately follows the modern professional film-studio interaction pattern: a center hero frame, a reference tray, an @mention composer, and a right-side director panel. Triven branding and controls remain original; external product branding/assets are not copied.
+
+### Director controls
+
+Camera, lens, framing, genre, colour, and tempo controls are `auto` by default. When a creator chooses a value, Triven compiles that explicit direction into the scene prompt. With all Director controls on `auto`, prompt-only Factory mode stays user-authored and does not add those directives.
+
+### Reference limits
+
+The Element library and the per-scene active-reference limit are separate concepts. A workspace may keep many saved Elements, but the deployed LTX Ingredients profile currently defaults to a smaller active scene set for quality and VRAM safety. Limits are returned by `/api/v1/generations/capabilities` and shown in the UI instead of being hidden client constants.
+
+### Identity vs exact start frame
+
+- `identity`: Triven builds a reference sheet and uses the LTX-2.5 Ingredients IC-LoRA path. The Element defines who/what must remain stable while the prompt controls action and composition.
+- `start_frame`: the canonical image becomes frame-zero conditioning. Use this when the uploaded image is the exact composition that should be animated.
+
+Only one start-frame Element is accepted in a scene. Other active Elements must use identity mode.

@@ -72,6 +72,7 @@ def evaluate_scene_cardinality(
     scene_prompt: str,
     qc_mode: str = "auto",
     reference_frame_path: Path | None = None,
+    canonical_reference_paths: list[tuple[str, Path]] | None = None,
 ) -> ContinuityQCResult:
     """Inspect frames for duplicate subjects *and* recurring-character identity drift.
 
@@ -100,10 +101,27 @@ def evaluate_scene_cardinality(
         exact = "No exact per-shot counts supplied; enforce canonical maximums and reject obvious clones."
 
     has_reference = bool(reference_frame_path and reference_frame_path.exists())
+    canonical_refs = [
+        (label, path) for label, path in (canonical_reference_paths or [])
+        if path and path.exists()
+    ]
+    reference_instruction = []
+    if canonical_refs:
+        reference_instruction.append(
+            "The first labeled reference images are CANONICAL ELEMENT REFERENCES. They define who/what the recurring Elements must look like and outrank incidental drift in previous generated frames."
+        )
+    if has_reference:
+        reference_instruction.append(
+            "A PREVIOUS APPROVED CONTINUITY FRAME is also attached. Use it for pose, wardrobe state, geography and motion continuity, but do not let gradual drift override the canonical Element references."
+        )
+    if not reference_instruction:
+        reference_instruction.append(
+            "No external identity reference is available for this first shot; evaluate cardinality, anatomy, and consistency within the sampled clip."
+        )
     prompt = f"""
 You are Triven Cinema's strict visual continuity inspector.
 The generated clip is represented by sampled frames attached after this instruction.
-{('The FIRST attached image is the PREVIOUS APPROVED CONTINUITY REFERENCE. It is NOT a sample from the new clip. Compare recurring characters in the new samples against it.' if has_reference else 'No previous reference image is available for this first shot; evaluate cardinality, anatomy, and consistency within the sampled clip.')}
+{' '.join(reference_instruction)}
 
 CANONICAL ENTITY LOCKS:
 {chr(10).join(lock_lines) if lock_lines else 'No structured locks available. Use the character bible and reject obvious duplicate copies of the same recurring subject.'}
@@ -122,6 +140,7 @@ QC RULES:
 - A recurring subject must not appear as twins, mirrored physical duplicates, extra bodies, extra heads/faces, split bodies, fused people, or ghost clones.
 - Do not count a normal shadow or a clearly readable reflection as another physical subject.
 - For an expected count of 1, two simultaneously visible physical instances is a failure.
+- If canonical Element references exist, recurring named characters/props/locations must match those references first: recognizable facial identity, age band, skin tone, hair, costume palette, body proportions, object design, or location landmarks as applicable.
 - If a previous approved reference exists, recurring named characters must preserve the same recognizable facial identity, age band, skin tone, hair, costume palette, body proportions, and signature props unless the scene explicitly calls for a justified change.
 - A face replacement, unexplained costume/body redesign, one named character turning into another, or strong identity drift is a failure.
 - Ignore tiny unrelated background strangers unless they duplicate a locked recurring subject.
@@ -152,9 +171,15 @@ Return ONLY JSON with exactly this shape:
             return _skipped("No QC frames could be extracted from the generated clip.")
 
         parts: list[dict] = [{"text": prompt}]
+        if canonical_refs:
+            parts.append({"text": "CANONICAL ELEMENT REFERENCES:"})
+            for label, path in canonical_refs:
+                parts.append({"text": f"CANONICAL {label}:"})
+                parts.append(_image_part(path))
         if has_reference and reference_frame_path is not None:
             parts.append({"text": "PREVIOUS APPROVED CONTINUITY REFERENCE:"})
             parts.append(_image_part(reference_frame_path))
+        if canonical_refs or has_reference:
             parts.append({"text": "GENERATED CLIP SAMPLES:"})
         for frame in frames:
             parts.append(_image_part(frame))

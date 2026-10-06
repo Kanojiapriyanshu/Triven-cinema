@@ -10,6 +10,14 @@ from app.services.audio_qc import evaluate_scene_audio
 from app.services.continuity_service import compose_continuity_prompt
 from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
+from app.services.element_service import (
+    ElementError,
+    build_reference_sheet,
+    canonical_reference_paths as element_canonical_reference_paths,
+    compile_element_prompt,
+    elements_for_scene,
+    resolve_element_bindings,
+)
 from app.services.long_render_service import render_long_clip
 from app.services.media_probe import probe_media
 from app.services.metrics_service import estimate_gpu_cost, record_generation_metric
@@ -109,6 +117,13 @@ def run_factory_generation(
     anchor selection, and an optional vision QC/regeneration gate.
     """
     ensure_minimum_free_disk()
+    try:
+        resolved_element_bindings = resolve_element_bindings(workspace_id, request.element_bindings)
+    except ElementError as exc:
+        raise ValueError(str(exc)) from exc
+    if resolved_element_bindings and request.provider != "modal":
+        raise ValueError("Reusable Elements currently require the Modal LTX-2.5 provider.")
+
     if request.target_duration_seconds > settings.max_factory_duration_seconds:
         raise ValueError(
             f"Factory jobs are limited to {settings.max_factory_duration_seconds}s on this deployment."
@@ -187,12 +202,44 @@ def run_factory_generation(
     all_audio_qc_passed = True
     audio_retake_count = 0
     audio_warnings: list[str] = []
+    elements_used: set[str] = set()
+    element_reference_modes: set[str] = set()
+    temporary_element_sheets: list[Path] = []
 
     try:
         for index, scene in enumerate(plan.scenes):
             if index >= len(scene_durations):
                 break
             duration = scene_durations[index]
+            active_elements = elements_for_scene(scene.prompt, resolved_element_bindings)
+            for binding in active_elements:
+                elements_used.add(f"@{binding.handle}")
+
+            identity_elements = [item for item in active_elements if item.reference_mode == "identity"]
+            start_frame_elements = [item for item in active_elements if item.reference_mode == "start_frame"]
+            use_ingredients = bool(identity_elements or len(active_elements) > 1)
+            if use_ingredients and not settings.element_ingredients_enabled:
+                raise ValueError("Element identity conditioning is disabled on this deployment.")
+            if use_ingredients and duration > settings.element_ingredients_max_scene_seconds + 1e-6:
+                raise ValueError(
+                    f"Element identity-conditioned Factory scenes are currently limited to "
+                    f"{settings.element_ingredients_max_scene_seconds:g}s. Use 15/20s scenes; "
+                    "30s remains available for prompt-only or exact single start-frame shots."
+                )
+
+            element_sheet_path: Path | None = None
+            if use_ingredients:
+                element_sheet_path = GENERATED_DIR / f".element-sheet-{uuid.uuid4().hex}.png"
+                build_reference_sheet(active_elements, element_sheet_path)
+                temporary_element_sheets.append(element_sheet_path)
+                element_reference_modes.add("ingredients")
+
+            explicit_start_frame = Path(start_frame_elements[0].primary_asset_path) if start_frame_elements else None
+            scene_reference_frame = explicit_start_frame or (
+                previous_frame if request.continuity_mode == "strict" and previous_frame is not None else None
+            )
+            if explicit_start_frame is not None:
+                element_reference_modes.add("start_frame")
 
             base_progress = 12 + int((index / max(1, scene_count)) * 66)
 
@@ -228,13 +275,13 @@ def run_factory_generation(
                         scene_count=scene_count,
                         entity_locks=plan.entity_locks,
                         visible_entity_counts=scene.visible_entity_counts,
-                        reference_frame_present=(
-                            request.continuity_mode == "strict" and previous_frame is not None
-                        ),
+                        reference_frame_present=(scene_reference_frame is not None),
                         retry_level=attempt,
                         qc_feedback=last_qc_note,
                     )
                 locked_prompt = _audio_prompt(locked_prompt, request.audio_direction)
+                if active_elements:
+                    locked_prompt = compile_element_prompt(locked_prompt, active_elements)
 
                 if attempt > 0 and progress:
                     progress(
@@ -253,12 +300,13 @@ def run_factory_generation(
                     decoder=effective_decoder,
                     enhance_prompt=False,
                     render_mode=render_mode,
-                    reference_image_path=(
-                        str(previous_frame)
-                        if request.continuity_mode == "strict" and previous_frame is not None
-                        else None
-                    ),
+                    reference_image_path=str(scene_reference_frame) if scene_reference_frame is not None else None,
                     reference_strength=request.continuity_strength,
+                    element_reference_sheet_path=str(element_sheet_path) if element_sheet_path is not None else None,
+                    element_reference_strength=(
+                        max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
+                        if use_ingredients else settings.element_ingredients_strength
+                    ),
                     progress=chunk_progress,
                 )
                 path = Path(result.path)
@@ -283,11 +331,8 @@ def run_factory_generation(
                         character_bible=plan.character_bible,
                         scene_prompt=locked_prompt,
                         qc_mode=effective_qc_mode,
-                        reference_frame_path=(
-                            previous_frame
-                            if request.continuity_mode == "strict" and previous_frame is not None
-                            else None
-                        ),
+                        reference_frame_path=scene_reference_frame,
+                        canonical_reference_paths=element_canonical_reference_paths(active_elements),
                     )
                     qc_attempted = qc_attempted or not qc.skipped
                     if qc.skipped and effective_qc_mode == "strict":
@@ -535,6 +580,8 @@ def run_factory_generation(
             audio_qc_passed=(all_audio_qc_passed if audio_qc_attempted else None),
             audio_retake_count=audio_retake_count,
             audio_warnings=audio_warnings,
+            elements_used=sorted(elements_used),
+            element_reference_mode=("+".join(sorted(element_reference_modes)) if element_reference_modes else None),
             youtube_video_id=youtube_video_id,
             youtube_url=youtube_url,
             youtube_privacy=youtube_privacy,
@@ -542,3 +589,5 @@ def run_factory_generation(
     finally:
         for frame in continuity_frames:
             frame.unlink(missing_ok=True)
+        for sheet in temporary_element_sheets:
+            sheet.unlink(missing_ok=True)

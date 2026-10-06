@@ -1,4 +1,5 @@
 import logging
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -31,6 +32,14 @@ from app.services.billing_service import (
 from app.services.continuity_service import compose_continuity_prompt, safe_continuity_id
 from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
+from app.services.element_service import (
+    ElementError,
+    build_reference_sheet,
+    canonical_reference_paths as element_canonical_reference_paths,
+    compile_element_prompt,
+    elements_for_scene,
+    resolve_element_bindings,
+)
 from app.services.identity_service import ensure_workspace, workspace_id_from_request
 from app.services.job_service import (
     JobQueueFullError,
@@ -108,6 +117,8 @@ def _audio_prompt(prompt: str, audio_direction: str | None) -> str:
 def _generate_video_impl(
     request: VideoGenerationRequest,
     progress: ProgressCallback | None = None,
+    *,
+    workspace_id: str | None = None,
 ) -> VideoGenerationResponse:
     validate_scene_duration(
         quality=request.quality,
@@ -117,6 +128,16 @@ def _generate_video_impl(
         progress("initializing", 8, "Checking storage, continuity state and render provider...")
 
     ensure_minimum_free_disk()
+    if request.element_bindings and not workspace_id:
+        raise ValueError("Element-bound generation requires a workspace session.")
+    try:
+        resolved_elements = resolve_element_bindings(workspace_id or "", request.element_bindings) if request.element_bindings else []
+    except ElementError as exc:
+        raise ValueError(str(exc)) from exc
+    active_elements = elements_for_scene(request.prompt, resolved_elements)
+    if active_elements and (request.provider or settings.video_provider) != "modal":
+        raise ValueError("Reusable Elements currently require the Modal LTX-2.5 provider.")
+
     provider_key = request.provider or settings.video_provider
     provider = get_video_provider(provider_key, model=request.model)
     render_mode = "dfr" if request.quality != "preview" and provider_key == "modal" else "distilled"
@@ -151,6 +172,23 @@ def _generate_video_impl(
             request.reference_frame_filename,
             extensions={".png", ".jpg", ".jpeg", ".webp"},
         )
+
+    identity_elements = [item for item in active_elements if item.reference_mode == "identity"]
+    start_frame_elements = [item for item in active_elements if item.reference_mode == "start_frame"]
+    use_ingredients = bool(identity_elements or len(active_elements) > 1)
+    if use_ingredients and not settings.element_ingredients_enabled:
+        raise ValueError("Element identity conditioning is disabled on this deployment.")
+    if use_ingredients and request.duration_seconds > settings.element_ingredients_max_scene_seconds + 1e-6:
+        raise ValueError(
+            f"Element identity-conditioned clips are currently limited to {settings.element_ingredients_max_scene_seconds:g}s."
+        )
+    if start_frame_elements:
+        reference_path = Path(start_frame_elements[0].primary_asset_path)
+
+    element_sheet_path: Path | None = None
+    if use_ingredients:
+        element_sheet_path = Path(tempfile.gettempdir()) / f"triven-element-sheet-{uuid.uuid4().hex}.png"
+        build_reference_sheet(active_elements, element_sheet_path)
 
     if progress:
         progress(
@@ -194,6 +232,8 @@ def _generate_video_impl(
                 qc_feedback=last_qc_note,
             )
         prompt_to_render = _audio_prompt(prompt_to_render, request.audio_direction)
+        if active_elements:
+            prompt_to_render = compile_element_prompt(prompt_to_render, active_elements)
 
         result = render_long_clip(
             provider=provider,
@@ -207,6 +247,11 @@ def _generate_video_impl(
             render_mode=render_mode,
             reference_image_path=str(reference_path) if reference_path else None,
             reference_strength=request.continuity_strength,
+            element_reference_sheet_path=str(element_sheet_path) if element_sheet_path else None,
+            element_reference_strength=(
+                max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
+                if use_ingredients else settings.element_ingredients_strength
+            ),
             progress=chunk_progress,
         )
         candidate_path = Path(result.path)
@@ -226,6 +271,7 @@ def _generate_video_impl(
                 scene_prompt=prompt_to_render,
                 qc_mode=request.continuity_qc_mode,
                 reference_frame_path=reference_path,
+                canonical_reference_paths=element_canonical_reference_paths(active_elements),
             )
             qc_attempted = qc_attempted or not qc.skipped
             if qc.skipped and request.continuity_qc_mode == "strict":
@@ -329,6 +375,9 @@ def _generate_video_impl(
     if delivery_path != source_path:
         source_path.unlink(missing_ok=True)
 
+    if element_sheet_path is not None:
+        element_sheet_path.unlink(missing_ok=True)
+
     return VideoGenerationResponse(
         video_url=media_url(filename),
         download_url=download_url(filename),
@@ -356,6 +405,10 @@ def _generate_video_impl(
         continuity_qc_passed=(final_qc_passed if qc_attempted else None),
         continuity_regenerations=continuity_regenerations,
         continuity_warnings=continuity_warnings,
+        elements_used=[f"@{item.handle}" for item in active_elements],
+        element_reference_mode=(
+            "ingredients" if use_ingredients else ("start_frame" if start_frame_elements else None)
+        ),
     )
 
 
@@ -411,9 +464,22 @@ async def generation_capabilities():
         async_jobs=True,
         audio_probe=True,
         cost_tracking_configured=cost_tracking_configured,
+        gpu=settings.triven_modal_gpu,
         production_mode=settings.is_production,
         job_workers=settings.job_workers,
         job_max_pending=settings.job_max_pending,
+        elements={
+            "enabled": True,
+            "ingredients_enabled": settings.element_ingredients_enabled,
+            "max_stored": settings.element_max_stored_per_workspace,
+            "max_assets_per_element": settings.element_max_assets_per_element,
+            "max_active_per_scene": settings.element_max_active_per_scene,
+            "max_characters_per_scene": settings.element_max_characters_per_scene,
+            "max_props_per_scene": settings.element_max_props_per_scene,
+            "max_locations_per_scene": settings.element_max_locations_per_scene,
+            "max_styles_per_scene": settings.element_max_styles_per_scene,
+            "ingredients_max_scene_seconds": settings.element_ingredients_max_scene_seconds,
+        },
     )
 
 
@@ -448,12 +514,13 @@ def plan_generation(request: ScenePlanRequest):
 
 
 @router.post("/video", response_model=VideoGenerationResponse)
-def generate_video(request: VideoGenerationRequest):
+def generate_video(payload: VideoGenerationRequest, request: Request, response: Response):
     """Synchronous compatibility endpoint. Prefer /jobs/video in the UI."""
     if settings.is_production and not settings.enable_sync_render_endpoints:
         raise HTTPException(status_code=404, detail="Not found.")
     try:
-        return _generate_video_impl(request)
+        workspace_id = ensure_workspace(request, response)
+        return _generate_video_impl(payload, workspace_id=workspace_id)
     except Exception as exc:
         LOGGER.exception("Video generation failed")
         detail = str(exc) if settings.debug and not settings.is_production else "Video generation failed."
@@ -482,7 +549,7 @@ def create_video_job(
             update_job(job_id, status="running", stage=stage, progress=percent, message=message)
 
         try:
-            result = _generate_video_impl(payload, progress=progress)
+            result = _generate_video_impl(payload, progress=progress, workspace_id=workspace_id)
             return result.model_dump()
         except Exception:
             refund_credits(workspace_id, charge_seconds, charge_reference)

@@ -50,17 +50,26 @@ class ModalLTXProvider(VideoProvider):
         render_mode: str = "distilled",
         reference_image_path: str | None = None,
         reference_strength: float = 0.95,
+        element_reference_sheet_path: str | None = None,
+        element_reference_strength: float = 1.0,
     ) -> VideoGenerationResult:
         started = time.perf_counter()
 
         reference_bytes: bytes | None = None
         reference_suffix = ".png"
+        element_reference_sheet_bytes: bytes | None = None
         if reference_image_path:
             path = Path(reference_image_path)
             if not path.exists():
                 raise FileNotFoundError(f"Continuity reference frame not found: {path.name}")
             reference_bytes = path.read_bytes()
             reference_suffix = path.suffix.lower() or ".png"
+
+        if element_reference_sheet_path:
+            sheet = Path(element_reference_sheet_path)
+            if not sheet.exists():
+                raise FileNotFoundError(f"Element reference sheet not found: {sheet.name}")
+            element_reference_sheet_bytes = sheet.read_bytes()
 
         try:
             remote_function = modal.Function.from_name(self.app_name, self.function_name)
@@ -76,6 +85,8 @@ class ModalLTXProvider(VideoProvider):
                 reference_image_bytes=reference_bytes,
                 reference_image_suffix=reference_suffix,
                 reference_strength=float(reference_strength),
+                element_reference_sheet_bytes=element_reference_sheet_bytes,
+                element_reference_strength=float(element_reference_strength),
             )
         except Exception as exc:
             LOGGER.exception(

@@ -9,6 +9,53 @@ export type ContinuityQCMode = "off" | "auto" | "strict";
 export type GenerationMode = "factory" | "storyboard" | "direct";
 export type YouTubePrivacy = "private" | "unlisted" | "public";
 export type JobStatusName = "queued" | "running" | "completed" | "failed";
+export type ElementType = "character" | "prop" | "location" | "style";
+export type ElementReferenceMode = "identity" | "start_frame";
+
+export interface ElementAsset {
+  id: string;
+  filename: string;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: number;
+  width: number | null;
+  height: number | null;
+  role: string;
+  asset_url: string;
+  created_at: string;
+}
+
+export interface CinemaElement {
+  id: string;
+  name: string;
+  handle: string;
+  type: ElementType;
+  description: string;
+  status: "active" | "archived";
+  current_version_id: string;
+  current_version: number;
+  primary_asset_id: string | null;
+  assets: ElementAsset[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ElementListResponse {
+  elements: CinemaElement[];
+  count: number;
+  max_stored: number;
+  max_assets_per_element: number;
+  max_active_per_scene: number;
+}
+
+export interface ElementBinding {
+  element_id: string;
+  version_id?: string | null;
+  handle: string;
+  reference_mode: ElementReferenceMode;
+  strength: number;
+  apply_to_all_scenes: boolean;
+}
 export type JobStageName =
   | "queued"
   | "initializing"
@@ -86,6 +133,7 @@ export interface VideoGenerationRequest {
   continuity_max_retries?: number;
   reference_frame_filename?: string | null;
   continuity_strength?: number;
+  element_bindings?: ElementBinding[];
 }
 
 export interface MediaInfo {
@@ -127,6 +175,8 @@ export interface VideoGenerationResponse {
   continuity_qc_passed: boolean | null;
   continuity_regenerations: number;
   continuity_warnings: string[];
+  elements_used: string[];
+  element_reference_mode: string | null;
 }
 
 export interface FullVideoScene {
@@ -155,6 +205,7 @@ export interface FullVideoGenerationRequest {
   continuity_qc_mode?: ContinuityQCMode;
   continuity_max_retries?: number;
   continuity_strength?: number;
+  element_bindings?: ElementBinding[];
 }
 
 export interface FullVideoGenerationResponse {
@@ -226,9 +277,22 @@ export interface GenerationCapabilitiesResponse {
   async_jobs: boolean;
   audio_probe: boolean;
   cost_tracking_configured: boolean;
+  gpu: string | null;
   production_mode: boolean;
   job_workers: number;
   job_max_pending: number;
+  elements?: {
+    enabled: boolean;
+    ingredients_enabled: boolean;
+    max_stored: number;
+    max_assets_per_element: number;
+    max_active_per_scene: number;
+    max_characters_per_scene: number;
+    max_props_per_scene: number;
+    max_locations_per_scene: number;
+    max_styles_per_scene: number;
+    ingredients_max_scene_seconds: number;
+  };
 }
 
 export interface AsyncVideoGenerationResponse {
@@ -285,6 +349,8 @@ export interface RenderedSceneVideo {
   continuityQcPassed: boolean | null;
   continuityRegenerations: number;
   continuityWarnings: string[];
+  elementsUsed?: string[];
+  elementReferenceMode?: string | null;
 }
 
 export interface FactoryGenerationRequest {
@@ -304,6 +370,7 @@ export interface FactoryGenerationRequest {
   continuity_qc_mode?: ContinuityQCMode;
   continuity_max_retries?: number;
   enhance_prompt: boolean;
+  element_bindings?: ElementBinding[];
   publish_to_youtube: boolean;
   youtube_title?: string | null;
   youtube_description?: string;
@@ -347,6 +414,8 @@ export interface FactoryGenerationResponse {
   audio_qc_passed: boolean | null;
   audio_retake_count: number;
   audio_warnings: string[];
+  elements_used: string[];
+  element_reference_mode: string | null;
   youtube_video_id: string | null;
   youtube_url: string | null;
   youtube_privacy: YouTubePrivacy | null;

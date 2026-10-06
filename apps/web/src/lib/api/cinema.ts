@@ -2,6 +2,9 @@ import type {
   AsyncVideoGenerationResponse,
   BillingCatalogResponse,
   BillingMeResponse,
+  CinemaElement,
+  ElementListResponse,
+  ElementType,
   CombineScenesRequest,
   CombineScenesResponse,
   FactoryGenerationRequest,
@@ -88,7 +91,7 @@ async function apiJson<T>(path: string, init?: RequestInit, fallback = "Request 
     credentials: "include",
     ...init,
     headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
       ...(workspaceToken ? { [WORKSPACE_HEADER]: workspaceToken } : {}),
       ...(init?.headers || {}),
     },
@@ -96,6 +99,40 @@ async function apiJson<T>(path: string, init?: RequestInit, fallback = "Request 
   storeWorkspaceToken(response);
   if (!response.ok) throw new Error(await readApiError(response, fallback));
   return response.json();
+}
+
+export async function listElements(includeArchived = false): Promise<ElementListResponse> {
+  return apiJson(`/api/v1/elements${includeArchived ? "?include_archived=true" : ""}`, undefined, "Unable to load Elements.");
+}
+
+export async function createElement(payload: {
+  name: string;
+  handle: string;
+  type: ElementType;
+  description?: string;
+  files: File[];
+}): Promise<CinemaElement> {
+  const form = new FormData();
+  form.append("name", payload.name);
+  form.append("handle", payload.handle);
+  form.append("type", payload.type);
+  form.append("description", payload.description || "");
+  payload.files.forEach((file) => form.append("files", file));
+  return apiJson("/api/v1/elements", { method: "POST", body: form }, "Unable to create Element.");
+}
+
+export async function addElementAssets(elementId: string, files: File[]): Promise<CinemaElement> {
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file));
+  return apiJson(`/api/v1/elements/${encodeURIComponent(elementId)}/assets`, { method: "POST", body: form }, "Unable to add Element references.");
+}
+
+export async function updateElement(elementId: string, payload: Record<string, unknown>): Promise<CinemaElement> {
+  return apiJson(`/api/v1/elements/${encodeURIComponent(elementId)}`, { method: "PATCH", body: JSON.stringify(payload) }, "Unable to update Element.");
+}
+
+export async function archiveElement(elementId: string): Promise<CinemaElement> {
+  return apiJson(`/api/v1/elements/${encodeURIComponent(elementId)}`, { method: "DELETE" }, "Unable to archive Element.");
 }
 
 export async function getGenerationCapabilities(): Promise<GenerationCapabilitiesResponse> {

@@ -13,6 +13,7 @@ from app.schemas.generation import (
     VideoModelName,
     VideoProviderName,
 )
+from app.schemas.elements import ElementBinding
 from app.schemas.youtube import YouTubePrivacy
 
 
@@ -33,6 +34,10 @@ class FactoryGenerationRequest(BaseModel):
     continuity_qc_mode: ContinuityQCMode = "strict"
     continuity_max_retries: int = Field(default=1, ge=0, le=2)
     enhance_prompt: bool = False
+
+    # Reusable workspace Elements referenced with @handles in the prompt. The job
+    # stores immutable element/version ids rather than relying on plain text names.
+    element_bindings: list[ElementBinding] = Field(default_factory=list, max_length=20)
 
     publish_to_youtube: bool = False
     youtube_title: str | None = Field(default=None, max_length=100)
@@ -86,6 +91,8 @@ class FactoryGenerationResponse(BaseModel):
     audio_qc_passed: bool | None = None
     audio_retake_count: int = 0
     audio_warnings: list[str] = Field(default_factory=list)
+    elements_used: list[str] = Field(default_factory=list)
+    element_reference_mode: str | None = None
     youtube_video_id: str | None = None
     youtube_url: str | None = None
     youtube_privacy: Literal["private", "unlisted", "public"] | None = None

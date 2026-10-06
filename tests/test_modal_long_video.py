@@ -82,6 +82,43 @@ class ModalLongVideoTests(unittest.TestCase):
         frames_index = command.index("--num-frames") + 1
         self.assertEqual(command[frames_index], "721")
 
+    def test_ingredients_uses_ic_lora_and_can_compose_previous_frame(self):
+        command = ltx_worker.build_command(
+            prompt="Reference sheet: Radha and Krishna. Generated video: Radha approaches Krishna.",
+            output_path=Path("/tmp/out.mp4"),
+            width=1024,
+            height=576,
+            duration_seconds=15,
+            seed=42,
+            decoder="conv",
+            render_mode="dfr",
+            reference_image_path=Path("/tmp/previous.png"),
+            reference_strength=0.85,
+            element_reference_video_path=Path("/tmp/reference.mp4"),
+            element_reference_strength=1.0,
+        )
+        joined = " ".join(command)
+        self.assertIn("ltx_pipelines.ic_lora", command)
+        self.assertIn("--video-conditioning", command)
+        self.assertIn("--lora", command)
+        self.assertIn("ltx-2.5-22b-ic-lora-ingredients-0.9.safetensors", joined)
+        self.assertIn("--image", command)
+        self.assertNotIn("--detailing-lora", command)
+
+    def test_ingredients_rejects_thirty_second_identity_scene(self):
+        with self.assertRaises(ValueError):
+            ltx_worker.build_command(
+                prompt="Reference sheet: Radha. Generated video: one long shot.",
+                output_path=Path("/tmp/out.mp4"),
+                width=1920,
+                height=1088,
+                duration_seconds=30,
+                seed=42,
+                decoder="conv",
+                render_mode="dfr",
+                element_reference_video_path=Path("/tmp/reference.mp4"),
+            )
+
     def test_dfr_rejects_more_than_thirty_seconds_single_pass(self):
         with self.assertRaises(ValueError):
             ltx_worker.build_command(

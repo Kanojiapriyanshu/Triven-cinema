@@ -6,8 +6,8 @@ from pathlib import Path
 
 import modal
 
-from ltx_worker import build_command, run_ltx_command, temporal_chunk_count
-from models import DETAILING_LORA, MODEL_ROOT, REQUIRED_MODEL_FILES
+from ltx_worker import build_command, make_static_reference_video, run_ltx_command, temporal_chunk_count
+from models import DETAILING_LORA, INGREDIENTS_LORA, MODEL_ROOT, REQUIRED_MODEL_FILES
 from retake_worker import retake_audio_only
 
 
@@ -76,6 +76,15 @@ def download_models() -> dict:
     )
     downloaded.append(detailing)
 
+    INGREDIENTS_LORA.parent.mkdir(parents=True, exist_ok=True)
+    ingredients = hf_hub_download(
+        repo_id="Lightricks/LTX-2.5-22b-IC-LoRA-Ingredients",
+        filename=INGREDIENTS_LORA.name,
+        local_dir=str(INGREDIENTS_LORA.parent),
+        token=token,
+    )
+    downloaded.append(ingredients)
+
     models_volume.commit()
     return {"downloaded": downloaded, "count": len(downloaded), "ltx_repo_ref": LTX_REPO_REF}
 
@@ -104,6 +113,8 @@ def generate_video(
     reference_image_bytes: bytes | None = None,
     reference_image_suffix: str = ".png",
     reference_strength: float = 0.95,
+    element_reference_sheet_bytes: bytes | None = None,
+    element_reference_strength: float = 1.0,
 ) -> dict:
     del enhance_prompt  # Prompt enhancement currently happens in Triven/Gemini.
 
@@ -111,6 +122,8 @@ def generate_video(
     mode = (render_mode or "distilled").strip().lower()
     if mode == "dfr" and not DETAILING_LORA.exists():
         missing.append(str(DETAILING_LORA.relative_to(MODEL_ROOT)))
+    if element_reference_sheet_bytes and not INGREDIENTS_LORA.exists():
+        missing.append(str(INGREDIENTS_LORA.relative_to(MODEL_ROOT)))
     if missing:
         raise RuntimeError(
             "LTX-2.5 model files are missing. Run `modal run modal/app.py::download_models` "
@@ -121,12 +134,20 @@ def generate_video(
     output_path = Path("/tmp") / f"ltx-{uuid.uuid4().hex}.mp4"
 
     reference_path: Path | None = None
+    element_sheet_path: Path | None = None
+    element_reference_video_path: Path | None = None
     if reference_image_bytes:
         suffix = reference_image_suffix.lower()
         if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
             suffix = ".png"
         reference_path = Path("/tmp") / f"continuity-{uuid.uuid4().hex}{suffix}"
         reference_path.write_bytes(reference_image_bytes)
+
+    if element_reference_sheet_bytes:
+        element_sheet_path = Path("/tmp") / f"element-sheet-{uuid.uuid4().hex}.png"
+        element_sheet_path.write_bytes(element_reference_sheet_bytes)
+        element_reference_video_path = Path("/tmp") / f"element-guide-{uuid.uuid4().hex}.mp4"
+        make_static_reference_video(element_sheet_path, element_reference_video_path)
 
     try:
         command = build_command(
@@ -140,11 +161,17 @@ def generate_video(
             render_mode=mode,
             reference_image_path=reference_path,
             reference_strength=reference_strength,
+            element_reference_video_path=element_reference_video_path,
+            element_reference_strength=element_reference_strength,
         )
         run_ltx_command(command)
     finally:
         if reference_path is not None:
             reference_path.unlink(missing_ok=True)
+        if element_sheet_path is not None:
+            element_sheet_path.unlink(missing_ok=True)
+        if element_reference_video_path is not None:
+            element_reference_video_path.unlink(missing_ok=True)
 
     if not output_path.exists():
         raise RuntimeError("LTX finished without producing an MP4 file.")
@@ -159,15 +186,19 @@ def generate_video(
         "prompt": prompt,
         "render_details": (
             f"{width}x{height} · {duration_seconds:.2f}s · "
-            f"{'DFR production · single-pass scene' if mode == 'dfr' else 'Distilled preview'} · "
-            f"{'diffusion' if mode == 'dfr' else decoder} decoder · {GPU_TYPE}"
+            + (
+                "Elements Ingredients IC-LoRA · identity reference"
+                if element_reference_sheet_bytes
+                else ("DFR production · single-pass scene" if mode == "dfr" else "Distilled preview")
+            )
+            + f" · {('diffusion' if mode == 'dfr' else decoder)} decoder · {GPU_TYPE}"
             + (" · first-frame continuity" if reference_image_bytes else "")
         ),
         "render_seconds": elapsed,
         "gpu": GPU_TYPE,
-        "reference_conditioned": bool(reference_image_bytes),
-        "chunk_count": temporal_chunk_count(duration_seconds) if mode == "distilled" else 1,
-        "render_mode": mode,
+        "reference_conditioned": bool(reference_image_bytes or element_reference_sheet_bytes),
+        "chunk_count": 1 if element_reference_sheet_bytes else (temporal_chunk_count(duration_seconds) if mode == "distilled" else 1),
+        "render_mode": "ingredients" if element_reference_sheet_bytes else mode,
     }
 
 

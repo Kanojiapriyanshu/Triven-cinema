@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import time
 import uuid
 
 from fastapi import Request, Response
@@ -53,6 +54,34 @@ def verify_workspace_token(token: str | None) -> str | None:
     if len(workspace_id) != 32 or any(ch not in "0123456789abcdef" for ch in workspace_id):
         return None
     return workspace_id
+
+
+
+
+def _asset_signature(workspace_id: str, asset_id: str, expires_at: int) -> str:
+    payload = f"element-asset:{workspace_id}:{asset_id}:{expires_at}"
+    digest = hmac.new(_secret(), payload.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def sign_element_asset_access(workspace_id: str, asset_id: str, *, ttl_seconds: int | None = None) -> str:
+    ttl = int(ttl_seconds or settings.element_asset_url_ttl_seconds)
+    expires_at = int(time.time()) + max(60, ttl)
+    return f"{expires_at}.{_asset_signature(workspace_id, asset_id, expires_at)}"
+
+
+def verify_element_asset_access(workspace_id: str, asset_id: str, token: str | None) -> bool:
+    if not token or "." not in token:
+        return False
+    expires_raw, supplied = token.split(".", 1)
+    try:
+        expires_at = int(expires_raw)
+    except ValueError:
+        return False
+    if expires_at < int(time.time()):
+        return False
+    expected = _asset_signature(workspace_id, asset_id, expires_at)
+    return hmac.compare_digest(supplied, expected)
 
 
 def workspace_id_from_request(request: Request) -> str | None:

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     modal_app_name: str = "triven-cinema-ltx"
     modal_function_name: str = "generate_video"
+    triven_modal_gpu: str = "B200"
     triven_ltx_repo_ref: str = "v1.3.0"
 
     # Keep these at 0 until you copy the current hourly rates from Modal.
@@ -57,6 +58,30 @@ class Settings(BaseSettings):
     factory_enable_30s_1080p_single_pass: bool = True
     factory_experimental_1080p_scene_seconds: float = 30.0
     factory_allow_fallback_final: bool = False
+
+    # Enterprise reusable Elements. References are workspace-scoped and immutable
+    # version manifests are bound into jobs so later edits cannot silently change
+    # an already-rendered project. The Ingredients IC-LoRA is the multi-element
+    # identity path; first-frame mode remains available for exact image animation.
+    element_max_stored_per_workspace: int = 100
+    element_max_assets_per_element: int = 8
+    element_max_active_per_scene: int = 6
+    element_max_characters_per_scene: int = 3
+    element_max_props_per_scene: int = 3
+    element_max_locations_per_scene: int = 1
+    element_max_styles_per_scene: int = 1
+    element_max_upload_mb: int = 15
+    # Signed, asset-scoped preview URLs let <img> tags work even when local
+    # development uses a split web/API origin. They never expose the workspace token.
+    element_asset_url_ttl_seconds: int = 21600
+    element_reference_sheet_width: int = 768
+    element_reference_sheet_height: int = 448
+    element_ingredients_enabled: bool = True
+    element_ingredients_strength: float = 1.0
+    # Ingredients was trained on a short reference-sheet bucket. We allow the
+    # current 15-20s Factory profile as an explicit B200 experiment, but keep 30s
+    # identity-conditioned scenes disabled until they are separately benchmarked.
+    element_ingredients_max_scene_seconds: float = 20.0
 
     # Final-render audio guard. Gemini inspects rendered audio for gibberish or
     # unintended speech; Modal can repair failed audio via LTX Retake while keeping

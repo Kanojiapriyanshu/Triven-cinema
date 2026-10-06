@@ -5,6 +5,7 @@ from pathlib import Path
 from models import (
     AUDIO_VAE,
     DETAILING_LORA,
+    INGREDIENTS_LORA,
     SPATIAL_UPSCALER,
     TEXT_ENCODER,
     TRANSFORMER,
@@ -31,6 +32,20 @@ LONG_VIDEO_PIXEL_FRAMES = 97
 LONG_VIDEO_CARRY_FRAMES = 25
 LONG_VIDEO_MIN_DURATION_SECONDS = 20.0
 DFR_SINGLE_PASS_MAX_SECONDS = 30.0
+INGREDIENTS_EXPERIMENTAL_MAX_SECONDS = 20.0
+
+
+def make_static_reference_video(image_path: Path, output_path: Path, *, seconds: float = 5.0) -> None:
+    """Turn a composite Element reference sheet into the static guide video expected by IC-LoRA."""
+    command = [
+        "ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-framerate", "24",
+        "-i", str(image_path), "-t", f"{max(0.1, float(seconds)):.3f}",
+        "-vf", "scale=768:448:force_original_aspect_ratio=decrease,pad=768:448:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-an", str(output_path),
+    ]
+    process = subprocess.run(command, capture_output=True, text=True)
+    if process.returncode != 0 or not output_path.exists():
+        raise RuntimeError("Unable to build LTX Ingredients reference video: " + process.stderr[-2000:])
 
 
 def temporal_chunk_count(
@@ -61,25 +76,35 @@ def build_command(
     render_mode: str = "distilled",
     reference_image_path: Path | None = None,
     reference_strength: float = 0.95,
+    element_reference_video_path: Path | None = None,
+    element_reference_strength: float = 1.0,
 ) -> list[str]:
     mode = (render_mode or "distilled").strip().lower()
     if mode not in {"distilled", "dfr"}:
         raise ValueError(f"Unsupported LTX render mode: {render_mode}")
-    if mode == "dfr" and duration_seconds > DFR_SINGLE_PASS_MAX_SECONDS + 1e-6:
+    use_ingredients = element_reference_video_path is not None
+    if mode == "dfr" and not use_ingredients and duration_seconds > DFR_SINGLE_PASS_MAX_SECONDS + 1e-6:
         raise ValueError(
             f"DFR single-pass scenes are limited to {DFR_SINGLE_PASS_MAX_SECONDS:g}s in this deployment."
         )
+    if use_ingredients and duration_seconds > INGREDIENTS_EXPERIMENTAL_MAX_SECONDS + 1e-6:
+        raise ValueError(
+            f"Element identity-conditioned scenes are limited to {INGREDIENTS_EXPERIMENTAL_MAX_SECONDS:g}s "
+            "until the Ingredients profile is benchmarked beyond its training bucket."
+        )
 
-    # Production DFR needs the diffusion decoder. Preview can still use conv.
-    video_vae = VIDEO_VAE_DIFFUSION if (mode == "dfr" or decoder == "diffusion") else VIDEO_VAE_CONV
+    # Production DFR needs the diffusion decoder. Ingredients runs on the distilled
+    # base by design, while still allowing a first-frame image alongside its guide.
+    video_vae = VIDEO_VAE_DIFFUSION if (mode == "dfr" and not use_ingredients) or decoder == "diffusion" else VIDEO_VAE_CONV
     num_frames = frames_for_duration(duration_seconds)
+    pipeline_module = "ltx_pipelines.ic_lora" if use_ingredients else ("ltx_pipelines.dfr_pipeline" if mode == "dfr" else "ltx_pipelines.distilled")
 
     command = [
         "uv",
         "run",
         "python",
         "-m",
-        "ltx_pipelines.dfr_pipeline" if mode == "dfr" else "ltx_pipelines.distilled",
+        pipeline_module,
         "--transformer-path",
         str(TRANSFORMER),
         "--text-encoder-path",
@@ -106,7 +131,15 @@ def build_command(
         prompt,
     ]
 
-    if mode == "dfr":
+    if use_ingredients:
+        strength = max(0.0, min(1.5, float(element_reference_strength)))
+        command.extend(
+            [
+                "--lora", str(INGREDIENTS_LORA), f"{strength:.3f}",
+                "--video-conditioning", str(element_reference_video_path), f"{strength:.3f}",
+            ]
+        )
+    elif mode == "dfr":
         command.extend(
             [
                 "--detailing-lora",
