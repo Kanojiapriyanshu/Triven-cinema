@@ -33,16 +33,68 @@ LONG_VIDEO_CARRY_FRAMES = 25
 LONG_VIDEO_MIN_DURATION_SECONDS = 20.0
 DFR_SINGLE_PASS_MAX_SECONDS = 30.0
 INGREDIENTS_EXPERIMENTAL_MAX_SECONDS = 20.0
+INGREDIENTS_REFERENCE_FPS = 24
+INGREDIENTS_REFERENCE_MIN_FRAMES = 121
 
 
-def make_static_reference_video(image_path: Path, output_path: Path, *, seconds: float = 5.0) -> None:
-    """Turn a composite Element reference sheet into the static guide video expected by IC-LoRA."""
-    command = [
-        "ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-framerate", "24",
-        "-i", str(image_path), "-t", f"{max(0.1, float(seconds)):.3f}",
-        "-vf", "scale=768:448:force_original_aspect_ratio=decrease,pad=768:448:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-an", str(output_path),
+def static_reference_frame_count(duration_seconds: float, fps: int = INGREDIENTS_REFERENCE_FPS) -> int:
+    """Return an Ingredients reference length that matches the generated clip.
+
+    LTX Ingredients was trained with reference videos that are at least 121 frames
+    and whose static sheet is looped across the full target clip.  The old Triven
+    worker always sent a fixed five-second/120-frame guide, which under-conditioned
+    15-20 second scenes and could bias the beginning toward an artificial still hold.
+    """
+    return max(INGREDIENTS_REFERENCE_MIN_FRAMES, frames_for_duration(duration_seconds, fps=fps))
+
+
+def build_static_reference_video_command(
+    image_path: Path,
+    output_path: Path,
+    *,
+    width: int,
+    height: int,
+    frame_count: int,
+    fps: int = INGREDIENTS_REFERENCE_FPS,
+) -> list[str]:
+    target_width = max(64, int(width))
+    target_height = max(64, int(height))
+    target_frames = max(INGREDIENTS_REFERENCE_MIN_FRAMES, int(frame_count))
+    target_fps = max(1, int(fps))
+    return [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-loop", "1", "-framerate", str(target_fps),
+        "-i", str(image_path),
+        "-vf", (
+            f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
+            f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:black,"
+            f"fps={target_fps},format=yuv420p"
+        ),
+        "-frames:v", str(target_frames),
+        "-r", str(target_fps),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
+        "-movflags", "+faststart", "-an", str(output_path),
     ]
+
+
+def make_static_reference_video(
+    image_path: Path,
+    output_path: Path,
+    *,
+    width: int,
+    height: int,
+    frame_count: int,
+    fps: int = INGREDIENTS_REFERENCE_FPS,
+) -> None:
+    """Build the full-length static guide video expected by Ingredients IC-LoRA."""
+    command = build_static_reference_video_command(
+        image_path,
+        output_path,
+        width=width,
+        height=height,
+        frame_count=frame_count,
+        fps=fps,
+    )
     process = subprocess.run(command, capture_output=True, text=True)
     if process.returncode != 0 or not output_path.exists():
         raise RuntimeError("Unable to build LTX Ingredients reference video: " + process.stderr[-2000:])

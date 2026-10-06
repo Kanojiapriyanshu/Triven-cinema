@@ -301,4 +301,4 @@ Strict story continuity now combines character/style bibles, physical entity-cou
 
 ### Reusable Elements / Cinema Studio workflow
 
-The web studio supports reusable characters, props, locations and styles with `@mentions`, protected multi-image references, immutable Element versions, exact-start-frame or identity-reference modes, and a Director's Panel for camera/lens/look controls. See `docs/AI_VIDEO_FACTORY.md` and `docs/CONTINUITY_ENGINE.md` for the generation mapping.
+The web studio supports reusable characters, props, locations and styles with `@mentions`, protected multi-image references, immutable Element versions, exact-start-frame or identity-reference modes, and a simplified Cinema Studio-style Director panel. Identity guides are generated at the target duration/resolution with a 121-frame minimum, and supporting reference views are included in the Element sheet instead of being ignored. See `docs/AI_VIDEO_FACTORY.md` and `docs/CONTINUITY_ENGINE.md` for the generation mapping.

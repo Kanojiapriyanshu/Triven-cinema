@@ -119,6 +119,29 @@ class ModalLongVideoTests(unittest.TestCase):
                 element_reference_video_path=Path("/tmp/reference.mp4"),
             )
 
+
+    def test_ingredients_reference_video_matches_target_length_and_resolution(self):
+        frames = ltx_worker.static_reference_frame_count(15)
+        self.assertEqual(frames, 361)
+        command = ltx_worker.build_static_reference_video_command(
+            Path("/tmp/sheet.png"),
+            Path("/tmp/reference.mp4"),
+            width=1920,
+            height=1088,
+            frame_count=frames,
+        )
+        self.assertNotIn("-t", command)
+        frames_index = command.index("-frames:v") + 1
+        self.assertEqual(command[frames_index], "361")
+        vf = command[command.index("-vf") + 1]
+        self.assertIn("scale=1920:1088", vf)
+        self.assertIn("pad=1920:1088", vf)
+        self.assertEqual(command[command.index("-r") + 1], "24")
+
+    def test_ingredients_reference_video_never_drops_below_training_bucket(self):
+        self.assertEqual(ltx_worker.static_reference_frame_count(1), 121)
+        self.assertEqual(ltx_worker.static_reference_frame_count(5), 121)
+
     def test_dfr_rejects_more_than_thirty_seconds_single_pass(self):
         with self.assertRaises(ValueError):
             ltx_worker.build_command(

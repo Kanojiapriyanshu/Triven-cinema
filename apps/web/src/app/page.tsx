@@ -345,6 +345,10 @@ export default function Home() {
   const studioPreviewElement = selectedElement || referencedElements[0] || null;
   const studioPreviewAsset = studioPreviewElement ? primaryElementAsset(studioPreviewElement) : null;
   const characterElements = useMemo(() => elements.filter((element) => element.type === "character"), [elements]);
+  const quickCharacterElements = useMemo(
+    () => characterElements.filter((element) => !referencedElements.some((active) => active.id === element.id)).slice(0, 4),
+    [characterElements, referencedElements]
+  );
   const latestRenderedVideo = useMemo(() => {
     const values = Object.values(renderedVideos);
     return values.length ? values[values.length - 1] : null;
@@ -966,23 +970,23 @@ export default function Home() {
         <section className="studio-main-column">
           <div className="studio-stage-shell">
             <div className="studio-stage-header">
-              <div>
-                <div className="text-xs font-semibold text-[var(--text-strong)]">Scene canvas</div>
-                <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">Characters are defined before generation. Prompts direct performance; Elements preserve identity.</div>
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-semibold text-[var(--text-strong)]">Scene</div>
+                {referencedElements.length > 0 && <span className="studio-mini-pill">{referencedElements.length} Element{referencedElements.length === 1 ? "" : "s"}</span>}
               </div>
               <div className="flex items-center gap-2">
                 <span className="studio-mini-pill">{aspectRatio}</span>
-                <span className="studio-mini-pill">{qualityLabel(quality)}</span>
-                <span className="studio-mini-pill">{mode === "factory" ? `${factorySceneSeconds}s scene` : `${durationSeconds}s clip`}</span>
+                <span className="studio-mini-pill">{quality === "preview" ? "Preview" : quality.toUpperCase()}</span>
+                <span className="studio-mini-pill">{mode === "factory" ? `${factorySceneSeconds}s` : `${durationSeconds}s`}</span>
               </div>
             </div>
 
             <div className="studio-stage-area">
               <div className={`studio-canvas ${aspectRatio === "9:16" ? "studio-canvas-portrait" : aspectRatio === "1:1" ? "studio-canvas-square" : "studio-canvas-landscape"}`}>
                 {studioVideoUrl ? (
-                  <video src={studioVideoUrl} controls playsInline className="h-full w-full object-contain" />
+                  <video src={studioVideoUrl} controls playsInline preload="metadata" className="h-full w-full object-contain" />
                 ) : studioPreviewAsset ? (
-                  <img src={absoluteApiUrl(studioPreviewAsset.asset_url)} alt={studioPreviewElement?.name || "Element preview"} className="h-full w-full object-contain" />
+                  <img src={absoluteApiUrl(studioPreviewAsset.asset_url)} alt={studioPreviewElement?.name || "Element preview"} decoding="async" className="h-full w-full object-contain" />
                 ) : (
                   <div className="studio-empty-stage">
                     <div className="studio-empty-orbit"><span>+</span></div>
@@ -994,83 +998,50 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="studio-transport-bar">
-              <div className="flex items-center gap-3">
-                <button type="button" className="studio-icon-button" aria-label="Play preview"><PlayIcon /></button>
-                <span>00:00</span>
-                <div className="studio-scrub-track"><span /></div>
-                <span>{mode === "factory" ? `${factoryTargetSeconds}s` : `${durationSeconds}s`}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="studio-mini-pill">{provider}</span>
-                <span className="studio-mini-pill">{decoder}</span>
-              </div>
-            </div>
           </div>
 
           <form onSubmit={handleSubmit} className="studio-bottom-deck">
-            <div className="studio-assets-grid">
-              <section className="studio-asset-section">
-                <div className="studio-section-title-row">
-                  <div>
-                    <div className="studio-section-title">Characters</div>
-                    <div className="studio-section-subtitle">Reusable identities for the current production</div>
-                  </div>
-                  <span className="studio-count-pill">{characterElements.length}/{capabilities?.elements?.max_stored ?? 100}</span>
+            <section className="studio-elements-strip">
+              <div className="studio-section-title-row">
+                <div>
+                  <div className="studio-section-title">Elements</div>
+                  <div className="studio-section-subtitle">Cast and references for this shot. Type @ in the prompt to reuse any saved Element.</div>
                 </div>
-                <div className="studio-cast-strip">
-                  <button type="button" onClick={() => { setElementType("character"); setShowElementCreator(true); }} className="studio-create-character-card">
-                    <span className="studio-create-character-plus">+</span>
-                    <span>Create New Character</span>
-                  </button>
-                  {characterElements.map((element) => {
-                    const asset = primaryElementAsset(element);
-                    const active = hasElementMention(prompt, element.handle) || Boolean(elementApplyAll[element.id]);
-                    return (
-                      <button key={element.id} type="button" onClick={() => insertElementMention(element)} className={`studio-character-card ${active ? "studio-character-card-active" : ""}`}>
-                        <span className="studio-character-avatar">{asset ? <img src={absoluteApiUrl(asset.asset_url)} alt={element.name} /> : <span>{element.name.slice(0, 1)}</span>}</span>
-                        <span className="max-w-[82px] truncate text-[10px] font-medium text-[var(--text-secondary)]">{element.name}</span>
-                        <span className={`text-[9px] ${elementTone(element.type)}`}>@{element.handle}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-
-              <section className="studio-asset-section">
-                <div className="studio-section-title-row">
-                  <div>
-                    <div className="studio-section-title">References</div>
-                    <div className="studio-section-subtitle">Characters, props, locations and visual anchors used by this scene</div>
-                  </div>
+                <div className="flex items-center gap-2">
                   <span className="studio-count-pill">{referencedElements.length}/{capabilities?.elements?.max_active_per_scene ?? 6}</span>
+                  <button type="button" onClick={() => { setElementType("character"); setShowElementCreator(true); }} className="studio-small-action">+ Character</button>
+                  <button type="button" onClick={() => setShowReferencePicker(true)} className="studio-small-action">+ Add</button>
                 </div>
-                <div className="studio-reference-strip">
-                  <button type="button" onClick={() => setShowReferencePicker(true)} className="studio-add-reference-card">
-                    <span className="studio-create-character-plus"><PlusIcon /></span>
-                    <span>Add reference</span>
-                  </button>
-                  {referencedElements.map((element) => {
-                    const asset = primaryElementAsset(element);
-                    return (
-                      <button key={element.id} type="button" onClick={() => setSelectedElementId(element.id)} className={`studio-reference-card ${selectedElement?.id === element.id ? "studio-reference-card-active" : ""}`}>
-                        {asset ? <img src={absoluteApiUrl(asset.asset_url)} alt={element.name} /> : <span className="studio-reference-empty">{element.name.slice(0, 1)}</span>}
-                        <span className={`studio-reference-badge ${elementTone(element.type)}`}>{element.type}</span>
-                        <span className="studio-reference-label">@{element.handle}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-            </div>
+              </div>
+              <div className="studio-element-strip-row">
+                {referencedElements.map((element) => {
+                  const asset = primaryElementAsset(element);
+                  return (
+                    <button key={element.id} type="button" onClick={() => { setSelectedElementId(element.id); setDirectorTab("elements"); }} className="studio-element-compact studio-element-compact-active">
+                      <span className="studio-element-compact-thumb">{asset ? <img src={absoluteApiUrl(asset.asset_url)} alt={element.name} loading="lazy" decoding="async" /> : <span>{element.name.slice(0, 1)}</span>}</span>
+                      <span className="min-w-0 text-left"><span className="block max-w-[92px] truncate text-[10px] font-semibold text-[var(--text)]">{element.name}</span><span className={`block text-[9px] ${elementTone(element.type)}`}>@{element.handle}</span></span>
+                    </button>
+                  );
+                })}
+                {quickCharacterElements.map((element) => {
+                  const asset = primaryElementAsset(element);
+                  return (
+                    <button key={element.id} type="button" onClick={() => insertElementMention(element)} className="studio-element-compact">
+                      <span className="studio-element-compact-thumb">{asset ? <img src={absoluteApiUrl(asset.asset_url)} alt={element.name} loading="lazy" decoding="async" /> : <span>{element.name.slice(0, 1)}</span>}</span>
+                      <span className="min-w-0 text-left"><span className="block max-w-[92px] truncate text-[10px] font-semibold text-[var(--text-secondary)]">{element.name}</span><span className="block text-[9px] text-[var(--text-muted)]">saved character</span></span>
+                    </button>
+                  );
+                })}
+                {referencedElements.length === 0 && quickCharacterElements.length === 0 && (
+                  <button type="button" onClick={() => setShowReferencePicker(true)} className="studio-element-empty-cta"><PlusIcon /><span>Add a character, prop or location</span></button>
+                )}
+              </div>
+            </section>
 
             <section className="studio-prompt-panel">
               <div className="studio-prompt-heading">
-                <div>
-                  <div className="text-xs font-semibold text-[var(--text)]">Describe your scene</div>
-                  <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">Type @ to pull a saved Character, Prop, Location or Style into the shot.</div>
-                </div>
-                <span className="studio-mini-pill">{referencedElements.length} active references</span>
+                <div className="text-xs font-semibold text-[var(--text)]">Describe the shot</div>
+                <span className="text-[10px] text-[var(--text-muted)]">@ mentions stay locked to saved Elements</span>
               </div>
 
               <div className="studio-prompt-editor-wrap">
@@ -1162,7 +1133,7 @@ export default function Home() {
                   <div className="studio-inspector-eyebrow">Cinema Studio</div>
                   <div className="studio-inspector-title">Generation mode</div>
                 </div>
-                <span className="studio-mini-pill">v7</span>
+                <span className="studio-mini-pill">v8</span>
               </div>
               <div className="studio-mode-switch">
                 {(["factory", "storyboard", "direct"] as GenerationMode[]).map((item) => (
@@ -1264,85 +1235,61 @@ export default function Home() {
             )}
 
             {directorTab === "scene" && (
-              <>
-                <section className="studio-inspector-section studio-inspector-section-flush">
-                  <div className="studio-inspector-eyebrow">Scene</div>
-                  <div className="studio-inspector-title">Production settings</div>
-                  <div className="mt-4 grid gap-3">
-                    <Control label="Format"><select className="studio-inspector-control" value={aspectRatio} onChange={(e) => { setAspectRatio(e.target.value as AspectRatio); invalidateRenderedMedia(); }}><option value="16:9">16:9 Landscape</option><option value="9:16">9:16 Vertical</option><option value="1:1">1:1 Square</option></select></Control>
-                    <Control label="Delivery"><select className="studio-inspector-control" value={quality} onChange={(e) => handleQualityChange(e.target.value as RenderQuality)}><option value="preview">Source preview</option><option value="1080p">1080p master</option><option value="4k">4K master</option></select></Control>
-                    {mode === "factory" ? (
-                      <>
-                        <Control label="Final runtime"><select className="studio-inspector-control" value={factoryTargetSeconds} onChange={(e) => setFactoryTargetSeconds(Number(e.target.value))}>{FACTORY_TARGETS.map((value) => <option key={value} value={value}>{value < 60 ? `${value} seconds` : `${value / 60} minute${value === 60 ? "" : "s"}`}</option>)}</select></Control>
-                        <Control label="Scene runtime"><select className="studio-inspector-control" value={factorySceneSeconds} onChange={(e) => setFactorySceneSeconds(Number(e.target.value))}>{factoryDurationOptions.map((value) => <option key={value} value={value}>{value === 30 && quality === "1080p" ? "30s · experimental one-pass" : `${value}s · one-pass`}</option>)}</select></Control>
-                      </>
-                    ) : mode === "storyboard" ? (
-                      <>
-                        <Control label="Scenes"><select className="studio-inspector-control" value={sceneCount} onChange={(e) => setSceneCount(Number(e.target.value))}>{[2,3,4,6,8,10,12,16,20].map((value) => <option key={value} value={value}>{value} scenes</option>)}</select></Control>
-                        <Control label="Runtime / scene"><select className="studio-inspector-control" value={durationSeconds} onChange={(e) => setDurationSeconds(Number(e.target.value))}>{durationOptions.map((value) => <option key={value} value={value}>{value}s</option>)}</select></Control>
-                      </>
-                    ) : <Control label="Clip runtime"><select className="studio-inspector-control" value={durationSeconds} onChange={(e) => setDurationSeconds(Number(e.target.value))}>{durationOptions.map((value) => <option key={value} value={value}>{value}s</option>)}</select></Control>}
-                    <Control label="Audio"><select className="studio-inspector-control" value={audioMode} onChange={(e) => setAudioMode(e.target.value as AudioMode)}><option value="mastered">Generated + mastered</option><option value="native">Native LTX audio</option><option value="mute">Mute final video</option></select></Control>
-                    <Control label="Continuity"><select className="studio-inspector-control" value={continuityMode} onChange={(e) => setContinuityMode(e.target.value as ContinuityMode)}><option value="strict">Strict · identity + image</option><option value="balanced">Balanced · identity</option><option value="off">Off</option></select></Control>
+              <section className="studio-inspector-section studio-inspector-section-flush">
+                <div className="studio-inspector-eyebrow">Scene</div>
+                <div className="studio-inspector-title">Essentials</div>
+                <p className="studio-inspector-copy">Format, quality and scene length live beside Generate. Keep this panel for only what changes the production.</p>
+                <div className="mt-4 grid gap-3">
+                  {mode === "factory" ? (
+                    <Control label="Final runtime"><select className="studio-inspector-control" value={factoryTargetSeconds} onChange={(e) => setFactoryTargetSeconds(Number(e.target.value))}>{FACTORY_TARGETS.map((value) => <option key={value} value={value}>{value < 60 ? `${value} seconds` : `${value / 60} minute${value === 60 ? "" : "s"}`}</option>)}</select></Control>
+                  ) : mode === "storyboard" ? (
+                    <Control label="Storyboard scenes"><select className="studio-inspector-control" value={sceneCount} onChange={(e) => setSceneCount(Number(e.target.value))}>{[2,3,4,6,8,10,12,16,20].map((value) => <option key={value} value={value}>{value} scenes</option>)}</select></Control>
+                  ) : null}
+                  <Control label="Audio"><select className="studio-inspector-control" value={audioMode} onChange={(e) => setAudioMode(e.target.value as AudioMode)}><option value="mastered">Generated + mastered</option><option value="native">Native LTX audio</option><option value="mute">Mute final video</option></select></Control>
+                  <Control label="Continuity"><select className="studio-inspector-control" value={continuityMode} onChange={(e) => setContinuityMode(e.target.value as ContinuityMode)}><option value="strict">Strict · identity + image</option><option value="balanced">Balanced · identity</option><option value="off">Off</option></select></Control>
+                </div>
+
+                <details className="studio-inspector-details studio-inspector-advanced">
+                  <summary>Advanced</summary>
+                  <div className="mt-3 grid gap-3">
                     <div className="grid grid-cols-2 gap-2"><Control label="Seed"><input className="studio-inspector-control" type="number" min={0} value={seed} onChange={(e) => setSeed(Number(e.target.value) || 0)} /></Control><Control label="Decoder"><select className="studio-inspector-control" value={decoder} onChange={(e) => setDecoder(e.target.value as DecoderName)}><option value="conv">Conv</option><option value="diffusion">Diffusion</option></select></Control></div>
+                    <label className="studio-field-label">Sound direction<textarea value={audioDirection} onChange={(e) => setAudioDirection(e.target.value)} rows={4} className="studio-inspector-textarea" placeholder="Ambience, dialogue, Foley, music direction..." /></label>
+                    {mode === "factory" && youtube?.enabled && (
+                      <div className="studio-advanced-card">
+                        <label className="studio-feature-toggle">
+                          <span><strong>Publish to YouTube</strong><small>{youtube.connected ? youtube.channel_title || "Connected channel" : "Connect a channel first"}</small></span>
+                          <input type="checkbox" disabled={!youtube.connected} checked={publishToYouTube} onChange={(e) => setPublishToYouTube(e.target.checked)} />
+                        </label>
+                        {publishToYouTube && <div className="mt-3 grid gap-2"><input className="studio-inspector-control" value={youtubeTitle} onChange={(e) => setYoutubeTitle(e.target.value)} placeholder="YouTube title" /><select className="studio-inspector-control" value={youtubePrivacy} onChange={(e) => setYoutubePrivacy(e.target.value as YouTubePrivacy)}><option value="private">Private</option><option value="unlisted" disabled={!youtube.public_uploads_allowed}>Unlisted</option><option value="public" disabled={!youtube.public_uploads_allowed}>Public</option></select><textarea className="studio-inspector-textarea" rows={3} value={youtubeDescription} onChange={(e) => setYoutubeDescription(e.target.value)} placeholder="Description" /></div>}
+                      </div>
+                    )}
                   </div>
-                </section>
-
-                <section className="studio-inspector-section">
-                  <div className="studio-inspector-eyebrow">Audio</div>
-                  <div className="studio-inspector-title">Sound direction</div>
-                  <textarea value={audioDirection} onChange={(e) => setAudioDirection(e.target.value)} rows={4} className="studio-inspector-textarea" placeholder="Ambience, dialogue, Foley, music direction..." />
-                </section>
-
-                <section className="studio-inspector-section">
-                  <label className="studio-feature-toggle">
-                    <span><strong>AI Director</strong><small>Gemini scene planning + strict AI QC. Leave off to use your screenplay directly.</small></span>
-                    <input type="checkbox" checked={enhancePrompt} onChange={(e) => setEnhancePrompt(e.target.checked)} />
-                  </label>
-                </section>
-
-                {mode === "factory" && youtube?.enabled && (
-                  <section className="studio-inspector-section">
-                    <label className="studio-feature-toggle">
-                      <span><strong>Publish to YouTube</strong><small>{youtube.connected ? youtube.channel_title || "Connected channel" : "Connect a channel first"}</small></span>
-                      <input type="checkbox" disabled={!youtube.connected} checked={publishToYouTube} onChange={(e) => setPublishToYouTube(e.target.checked)} />
-                    </label>
-                    {publishToYouTube && <div className="mt-3 grid gap-2"><input className="studio-inspector-control" value={youtubeTitle} onChange={(e) => setYoutubeTitle(e.target.value)} placeholder="YouTube title" /><select className="studio-inspector-control" value={youtubePrivacy} onChange={(e) => setYoutubePrivacy(e.target.value as YouTubePrivacy)}><option value="private">Private</option><option value="unlisted" disabled={!youtube.public_uploads_allowed}>Unlisted</option><option value="public" disabled={!youtube.public_uploads_allowed}>Public</option></select><textarea className="studio-inspector-textarea" rows={3} value={youtubeDescription} onChange={(e) => setYoutubeDescription(e.target.value)} placeholder="Description" /></div>}
-                  </section>
-                )}
-              </>
+                </details>
+              </section>
             )}
 
             {directorTab === "camera" && (
               <section className="studio-inspector-section studio-inspector-section-flush">
-                <div className="studio-inspector-eyebrow">Director&apos;s Panel</div>
-                <div className="studio-inspector-title">Camera & optics</div>
-                <p className="studio-inspector-copy">These controls compile into the LTX scene prompt. Auto leaves your screenplay untouched.</p>
-                <div className="mt-4 grid gap-4">
+                <div className="studio-inspector-eyebrow">Director</div>
+                <div className="studio-inspector-title">Camera</div>
+                <p className="studio-inspector-copy">Choose only what matters. Auto leaves the screenplay untouched.</p>
+                <div className="mt-4 grid gap-3">
                   <Control label="Shot size"><select className="studio-inspector-control" value={shotSize} onChange={(e) => setShotSize(e.target.value as ShotSize)}>{SHOT_SIZES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></Control>
-                  <div>
-                    <div className="studio-field-label mb-2">Camera movement</div>
-                    <div className="studio-preset-grid">
-                      {CAMERA_MOVES.map((item) => <button key={item.value} type="button" onClick={() => setCameraMove(item.value)} className={cameraMove === item.value ? "studio-preset-active" : ""}>{item.label}</button>)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="studio-field-label mb-2">Lens</div>
-                    <div className="studio-lens-row">{LENS_PRESETS.map((value) => <button key={value} type="button" onClick={() => setLensPreset(value)} className={lensPreset === value ? "studio-preset-active" : ""}>{value === "auto" ? "Auto" : value}</button>)}</div>
-                  </div>
+                  <Control label="Movement"><select className="studio-inspector-control" value={cameraMove} onChange={(e) => setCameraMove(e.target.value as CameraMove)}>{CAMERA_MOVES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></Control>
+                  <Control label="Lens"><select className="studio-inspector-control" value={lensPreset} onChange={(e) => setLensPreset(e.target.value as LensPreset)}>{LENS_PRESETS.map((value) => <option key={value} value={value}>{value === "auto" ? "Auto" : value}</option>)}</select></Control>
                 </div>
               </section>
             )}
 
             {directorTab === "look" && (
               <section className="studio-inspector-section studio-inspector-section-flush">
-                <div className="studio-inspector-eyebrow">Director&apos;s Panel</div>
-                <div className="studio-inspector-title">Genre, colour & tempo</div>
-                <p className="studio-inspector-copy">Use production-level direction without rewriting the story or redefining @Elements.</p>
-                <div className="mt-4 grid gap-4">
-                  <div><div className="studio-field-label mb-2">Genre</div><div className="studio-preset-grid studio-preset-grid-2">{GENRE_PRESETS.map((value) => <button key={value} type="button" onClick={() => setGenrePreset(value)} className={genrePreset === value ? "studio-preset-active" : ""}>{value === "auto" ? "Auto" : value}</button>)}</div></div>
-                  <Control label="Colour palette"><select className="studio-inspector-control" value={colorPreset} onChange={(e) => setColorPreset(e.target.value as ColorPreset)}>{COLOR_PRESETS.map((value) => <option key={value} value={value}>{value === "auto" ? "Auto" : value.replaceAll("-", " ")}</option>)}</select></Control>
-                  <div><div className="studio-field-label mb-2">Performance tempo</div><div className="studio-lens-row">{TEMPO_PRESETS.map((value) => <button key={value} type="button" onClick={() => setTempoPreset(value)} className={tempoPreset === value ? "studio-preset-active" : ""}>{value}</button>)}</div></div>
+                <div className="studio-inspector-eyebrow">Director</div>
+                <div className="studio-inspector-title">Look</div>
+                <p className="studio-inspector-copy">A small set of cinematic defaults instead of a wall of controls.</p>
+                <div className="mt-4 grid gap-3">
+                  <Control label="Genre"><select className="studio-inspector-control" value={genrePreset} onChange={(e) => setGenrePreset(e.target.value as GenrePreset)}>{GENRE_PRESETS.map((value) => <option key={value} value={value}>{value === "auto" ? "Auto" : value}</option>)}</select></Control>
+                  <Control label="Colour"><select className="studio-inspector-control" value={colorPreset} onChange={(e) => setColorPreset(e.target.value as ColorPreset)}>{COLOR_PRESETS.map((value) => <option key={value} value={value}>{value === "auto" ? "Auto" : value.replaceAll("-", " ")}</option>)}</select></Control>
+                  <Control label="Tempo"><select className="studio-inspector-control" value={tempoPreset} onChange={(e) => setTempoPreset(e.target.value as TempoPreset)}>{TEMPO_PRESETS.map((value) => <option key={value} value={value}>{value === "auto" ? "Auto" : value}</option>)}</select></Control>
                 </div>
               </section>
             )}

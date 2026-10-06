@@ -265,6 +265,8 @@ def compose_continuity_prompt(
         blocks.append(
             "REFERENCE FRAME IS AUTHORITATIVE: recurring subjects are the one and only canonical physical instance. "
             "Continue existing faces, bodies, wardrobe, props and geography. Describe only the next action/change. "
+            "BEGIN MOTION IMMEDIATELY after the anchor frame with natural micro-motion; do not freeze or hold the "
+            "opening for several seconds unless the user explicitly requests a still hold. "
             "DO NOT introduce, recreate, re-enter, spawn, mirror or clone them."
         )
     if identity:

@@ -193,19 +193,28 @@ Triven Cinema now uses a studio-first workflow instead of treating the prompt as
 ```text
 Create / My Elements / Takes
           -> Scene canvas
-          -> Characters + References
+          -> compact Elements tray
           -> @Element scene prompt
-          -> Director's Panel (Scene / Camera / Look / Elements)
+          -> Director panel (Scene / Camera / Look / Elements)
           -> LTX-2.5 render
 ```
 
 The browser exposes reusable `character`, `prop`, `location`, and `style` Elements. Each Element owns immutable versions and one or more protected reference images. The user can insert an Element into the prompt by typing `@`, selecting it from the reference picker, or choosing it from My Elements.
 
-The UI deliberately follows the modern professional film-studio interaction pattern: a center hero frame, a reference tray, an @mention composer, and a right-side director panel. Triven branding and controls remain original; external product branding/assets are not copied.
+The UI deliberately follows the modern professional film-studio interaction pattern: a center hero frame, one compact Elements tray, an @mention composer, and a right-side director panel. Duplicate controls are intentionally avoided: aspect ratio, delivery quality and shot duration live beside Generate, while the Director panel keeps only production essentials and collapses advanced settings. Triven branding and controls remain original; external product branding/assets are not copied.
 
 ### Director controls
 
 Camera, lens, framing, genre, colour, and tempo controls are `auto` by default. When a creator chooses a value, Triven compiles that explicit direction into the scene prompt. With all Director controls on `auto`, prompt-only Factory mode stays user-authored and does not add those directives.
+
+
+### Reference conditioning timing
+
+Identity conditioning no longer feeds LTX a fixed five-second guide. The Ingredients reference sheet is looped to the full generated clip length at the target frame rate, never below the 121-frame reference bucket, and encoded at the same target canvas as the generation request. This prevents the old short-guide mismatch that could bias the opening toward a frozen/held reference before action began.
+
+Each Element may keep several uploaded views. Triven now uses the canonical image as the dominant panel view and can place up to two supporting views beside it in the same clean, text-free panel. This makes front/profile/full-body references materially useful instead of storing them without passing them to the model.
+
+Conditioned prompts also explicitly separate appearance from timing: reference sheets define identity, while visible motion should begin immediately on the first generated frames unless the user explicitly asks for a still hold. Start-frame mode similarly treats the uploaded image as frame zero and animates forward rather than replaying it as a multi-second freeze.
 
 ### Reference limits
 

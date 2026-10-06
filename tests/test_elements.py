@@ -94,6 +94,59 @@ class ElementServiceTests(unittest.TestCase):
         self.assertIn("Generated video:", compiled)
         self.assertNotIn("@Radha", compiled)
 
+
+    def test_start_frame_prompt_animates_immediately_without_fake_reference_sheet(self):
+        radha = create_element(
+            self.workspace,
+            name="Radha",
+            handle="Radha",
+            element_type="character",
+            description="Canonical Radha.",
+            uploads=[UploadedElementAsset("radha.png", "image/png", image_bytes((210, 150, 160)))],
+        )
+        bindings = resolve_element_bindings(
+            self.workspace,
+            [
+                ElementBinding(
+                    element_id=radha["id"],
+                    version_id=radha["current_version_id"],
+                    handle="Radha",
+                    reference_mode="start_frame",
+                )
+            ],
+        )
+        compiled = compile_element_prompt("@Radha slowly turns toward camera.", bindings)
+        self.assertNotIn("Reference sheet:", compiled)
+        self.assertIn("START FRAME BEHAVIOR", compiled)
+        self.assertIn("Animate forward", compiled)
+        self.assertIn("Generated video:", compiled)
+
+    def test_reference_sheet_uses_supporting_views_not_only_primary(self):
+        radha = create_element(
+            self.workspace,
+            name="Radha",
+            handle="Radha",
+            element_type="character",
+            description="Canonical Radha.",
+            uploads=[
+                UploadedElementAsset("front.png", "image/png", image_bytes((255, 0, 0), (300, 600))),
+                UploadedElementAsset("profile.png", "image/png", image_bytes((0, 255, 0), (300, 600))),
+                UploadedElementAsset("body.png", "image/png", image_bytes((0, 0, 255), (300, 600))),
+            ],
+        )
+        bindings = resolve_element_bindings(
+            self.workspace,
+            [ElementBinding(element_id=radha["id"], version_id=radha["current_version_id"], handle="Radha")],
+        )
+        self.assertEqual(len(bindings[0].reference_asset_paths), 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = build_reference_sheet(bindings, Path(tmp) / "sheet.png")
+            with Image.open(path).convert("RGB") as image:
+                colors = {color for _, color in (image.getcolors(maxcolors=image.width * image.height) or [])}
+                self.assertIn((255, 0, 0), colors)
+                self.assertIn((0, 255, 0), colors)
+                self.assertIn((0, 0, 255), colors)
+
     def test_signed_asset_url_loads_without_workspace_header_or_cookie(self):
         element = create_element(
             self.workspace,

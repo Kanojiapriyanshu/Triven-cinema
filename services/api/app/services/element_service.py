@@ -509,7 +509,13 @@ def resolve_element_bindings(workspace_id: str, bindings: list[ElementBinding]) 
             primary = element["assets"][0]
         if primary is None:
             raise ElementError(f"@{element['handle']} has no usable reference image.")
-        path, _ = resolve_element_asset(workspace_id, primary["id"])
+        ordered_assets = [primary] + [asset for asset in element["assets"] if asset["id"] != primary["id"]]
+        reference_paths: list[str] = []
+        reference_urls: list[str] = []
+        for asset in ordered_assets:
+            asset_path, _ = resolve_element_asset(workspace_id, asset["id"])
+            reference_paths.append(str(asset_path))
+            reference_urls.append(asset["asset_url"])
         resolved.append(
             ResolvedElementBinding(
                 element_id=element["id"],
@@ -521,8 +527,10 @@ def resolve_element_bindings(workspace_id: str, bindings: list[ElementBinding]) 
                 reference_mode=binding.reference_mode,
                 strength=binding.strength,
                 apply_to_all_scenes=binding.apply_to_all_scenes,
-                primary_asset_path=str(path),
-                primary_asset_url=primary["asset_url"],
+                primary_asset_path=reference_paths[0],
+                primary_asset_url=reference_urls[0],
+                reference_asset_paths=reference_paths,
+                reference_asset_urls=reference_urls,
             )
         )
     return resolved
@@ -547,23 +555,80 @@ def elements_for_scene(scene_prompt: str, bindings: list[ResolvedElementBinding]
 def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBinding]) -> str:
     if not bindings:
         return scene_prompt
-    panel_lines = []
+
     action = scene_prompt
-    for index, binding in enumerate(bindings, start=1):
-        description = " ".join(binding.description.split())[:420]
-        panel_lines.append(
-            f"Panel {index}: {binding.type.upper()} {binding.name}. {description}".rstrip()
-        )
+    for binding in bindings:
         action = re.sub(
             rf"(?<![A-Za-z0-9_])@{re.escape(binding.handle)}\b",
             binding.name,
             action,
             flags=re.IGNORECASE,
         )
-    return (
-        "Reference sheet: " + " ".join(panel_lines) + "\n\n"
-        "Generated video: " + action.strip()
-    )
+
+    identity_bindings = [binding for binding in bindings if binding.reference_mode == "identity"]
+    start_frame_bindings = [binding for binding in bindings if binding.reference_mode == "start_frame"]
+    blocks: list[str] = []
+
+    if identity_bindings or len(bindings) > 1:
+        panel_lines: list[str] = []
+        for index, binding in enumerate(bindings, start=1):
+            description = " ".join(binding.description.split())[:420]
+            panel_lines.append(
+                f"Panel {index}: {binding.type.upper()} {binding.name}. {description}".rstrip()
+            )
+        blocks.append("Reference sheet: " + " ".join(panel_lines))
+        blocks.append(
+            "REFERENCE BEHAVIOR: The reference sheet defines appearance only, not timing. "
+            "Begin visible natural motion immediately on the first generated frames; do not hold, freeze, "
+            "or replay the reference sheet as an opening shot unless the user explicitly asks for a still hold."
+        )
+
+    if start_frame_bindings:
+        blocks.append(
+            "START FRAME BEHAVIOR: The supplied image is frame 0 and defines the existing composition. "
+            "Animate forward from it immediately with natural micro-motion; do not keep the first image frozen "
+            "for several seconds and do not recreate the subject as a new instance."
+        )
+
+    blocks.append("Generated video: " + action.strip())
+    return "\n\n".join(blocks)
+
+
+def _paste_contained(canvas: Image.Image, image_path: str, box: tuple[int, int, int, int]) -> None:
+    left, top, right, bottom = box
+    if right <= left or bottom <= top:
+        return
+    with Image.open(image_path) as source:
+        source = ImageOps.exif_transpose(source).convert("RGB")
+        fitted = ImageOps.contain(
+            source,
+            (right - left, bottom - top),
+            method=Image.Resampling.LANCZOS,
+        )
+        x = left + ((right - left) - fitted.width) // 2
+        y = top + ((bottom - top) - fitted.height) // 2
+        canvas.paste(fitted, (x, y))
+
+
+def _paste_element_panel(canvas: Image.Image, binding: ResolvedElementBinding, box: tuple[int, int, int, int]) -> None:
+    """Compose up to three views for one Element while keeping the primary dominant."""
+    left, top, right, bottom = box
+    paths = list(binding.reference_asset_paths or [binding.primary_asset_path])[:3]
+    if len(paths) == 1:
+        _paste_contained(canvas, paths[0], box)
+        return
+
+    width = right - left
+    primary_right = left + max(1, int(width * 0.64))
+    _paste_contained(canvas, paths[0], (left, top, primary_right, bottom))
+    side_left = min(right - 1, primary_right)
+    if len(paths) == 2:
+        _paste_contained(canvas, paths[1], (side_left, top, right, bottom))
+        return
+
+    middle = top + max(1, (bottom - top) // 2)
+    _paste_contained(canvas, paths[1], (side_left, top, right, middle))
+    _paste_contained(canvas, paths[2], (side_left, middle, right, bottom))
 
 
 def build_reference_sheet(bindings: list[ResolvedElementBinding], output_path: Path) -> Path:
@@ -585,12 +650,7 @@ def build_reference_sheet(bindings: list[ResolvedElementBinding], output_path: P
         top = row * cell_h
         right = width if col == columns - 1 else left + cell_w
         bottom = height if row == rows - 1 else top + cell_h
-        with Image.open(binding.primary_asset_path) as source:
-            source = ImageOps.exif_transpose(source).convert("RGB")
-            fitted = ImageOps.contain(source, (right - left, bottom - top), method=Image.Resampling.LANCZOS)
-            x = left + ((right - left) - fitted.width) // 2
-            y = top + ((bottom - top) - fitted.height) // 2
-            canvas.paste(fitted, (x, y))
+        _paste_element_panel(canvas, binding, (left, top, right, bottom))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path, format="PNG", optimize=True)

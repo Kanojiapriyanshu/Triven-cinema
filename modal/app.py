@@ -6,7 +6,13 @@ from pathlib import Path
 
 import modal
 
-from ltx_worker import build_command, make_static_reference_video, run_ltx_command, temporal_chunk_count
+from ltx_worker import (
+    build_command,
+    make_static_reference_video,
+    run_ltx_command,
+    static_reference_frame_count,
+    temporal_chunk_count,
+)
 from models import DETAILING_LORA, INGREDIENTS_LORA, MODEL_ROOT, REQUIRED_MODEL_FILES
 from retake_worker import retake_audio_only
 
@@ -147,7 +153,13 @@ def generate_video(
         element_sheet_path = Path("/tmp") / f"element-sheet-{uuid.uuid4().hex}.png"
         element_sheet_path.write_bytes(element_reference_sheet_bytes)
         element_reference_video_path = Path("/tmp") / f"element-guide-{uuid.uuid4().hex}.mp4"
-        make_static_reference_video(element_sheet_path, element_reference_video_path)
+        make_static_reference_video(
+            element_sheet_path,
+            element_reference_video_path,
+            width=width,
+            height=height,
+            frame_count=static_reference_frame_count(duration_seconds),
+        )
 
     try:
         command = build_command(
@@ -187,7 +199,7 @@ def generate_video(
         "render_details": (
             f"{width}x{height} · {duration_seconds:.2f}s · "
             + (
-                "Elements Ingredients IC-LoRA · identity reference"
+                f"Elements Ingredients IC-LoRA · identity reference · {static_reference_frame_count(duration_seconds)}f matched guide"
                 if element_reference_sheet_bytes
                 else ("DFR production · single-pass scene" if mode == "dfr" else "Distilled preview")
             )

@@ -92,3 +92,5 @@ class ResolvedElementBinding(BaseModel):
     apply_to_all_scenes: bool
     primary_asset_path: str
     primary_asset_url: str
+    reference_asset_paths: list[str] = Field(default_factory=list)
+    reference_asset_urls: list[str] = Field(default_factory=list)
