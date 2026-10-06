@@ -16,7 +16,7 @@ from app.services.metrics_service import estimate_gpu_cost, record_generation_me
 from app.services.scene_planner import create_prompt_only_plan, create_scene_plan
 from app.services.storage_service import ensure_minimum_free_disk
 from app.services.video_combiner import combine_videos, extract_continuity_frame
-from app.services.video_profiles import source_render_dimensions, validate_scene_duration
+from app.services.video_profiles import source_render_dimensions, validate_factory_scene_duration
 from app.services.youtube_service import upload_video
 from inference.providers.router import get_video_provider
 
@@ -26,6 +26,45 @@ GENERATED_DIR = (PROJECT_ROOT / "storage" / "generated").resolve()
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 ProgressCallback = Callable[[str, int, str], None]
 
+
+
+def _factory_scene_durations(total_seconds: float, max_scene_seconds: float, min_scene_seconds: float) -> list[float]:
+    """Split a Factory runtime without creating a short tail scene.
+
+    Example: 30s total with a 20s scene target becomes 15s + 15s, never
+    20s + 10s. This keeps every scene at or above the Factory minimum.
+    """
+    total = float(total_seconds)
+    maximum = float(max_scene_seconds)
+    minimum = float(min_scene_seconds)
+    if total <= 0 or maximum <= 0 or minimum <= 0:
+        raise ValueError("Factory durations must be positive.")
+    if total + 1e-6 < minimum:
+        raise ValueError(f"Factory runtime must be at least {minimum:g}s.")
+
+    count = max(1, math.ceil(total / maximum))
+    durations = [maximum] * max(0, count - 1)
+    durations.append(total - maximum * max(0, count - 1))
+
+    if len(durations) > 1 and durations[-1] + 1e-6 < minimum:
+        deficit = minimum - durations[-1]
+        for index in range(len(durations) - 2, -1, -1):
+            transferable = max(0.0, durations[index] - minimum)
+            moved = min(deficit, transferable)
+            durations[index] -= moved
+            durations[-1] += moved
+            deficit -= moved
+            if deficit <= 1e-6:
+                break
+        if deficit > 1e-6:
+            # For supported Factory targets this should not happen; if it does,
+            # evenly rebalance rather than silently creating a sub-minimum scene.
+            even = total / count
+            if even + 1e-6 < minimum:
+                raise ValueError("Factory runtime cannot be partitioned into the selected scene profile.")
+            durations = [even] * count
+
+    return [round(value, 3) for value in durations]
 
 def _scene_seed(base_seed: int, scene_index: int, attempt: int = 0) -> int:
     """Return a deterministic but different seed for every scene/retry.
@@ -74,19 +113,24 @@ def run_factory_generation(
         raise ValueError(
             f"Factory jobs are limited to {settings.max_factory_duration_seconds}s on this deployment."
         )
-    # Character-heavy final renders are deliberately decomposed into shorter shots.
-    # Long clips amplify face/body drift and make exact dialogue harder to control.
+    # Respect the selected Factory shot length. Do not silently collapse a 15/20/30s
+    # request back to 5/10s. Final Modal/DFR shots are submitted as one LTX call;
+    # 30s is an explicit experimental 1080p B200 profile, not stitched sub-clips.
     effective_scene_seconds = float(request.scene_duration_seconds)
-    if request.quality != "preview":
-        effective_scene_seconds = min(effective_scene_seconds, float(settings.cinema_max_scene_seconds))
-    validate_scene_duration(
+    validate_factory_scene_duration(
         quality=request.quality,
         duration_seconds=effective_scene_seconds,
     )
     if request.provider != "modal" and effective_scene_seconds > settings.ltx_native_chunk_seconds:
         raise ValueError("Long factory scenes currently require the Modal LTX provider.")
 
-    scene_count = max(1, math.ceil(request.target_duration_seconds / effective_scene_seconds))
+    scene_durations = _factory_scene_durations(
+        request.target_duration_seconds,
+        effective_scene_seconds,
+        settings.factory_min_scene_seconds,
+    )
+    scene_count = len(scene_durations)
+    planned_scene_seconds = max(scene_durations)
     if scene_count > 20:
         raise ValueError(
             "This factory job would require more than 20 story scenes. Increase scene duration or reduce total duration."
@@ -100,13 +144,13 @@ def run_factory_generation(
             scene_count=scene_count,
             aspect_ratio=request.aspect_ratio,
             force_ai=True,
-            target_scene_duration_seconds=effective_scene_seconds,
+            target_scene_duration_seconds=planned_scene_seconds,
         )
     else:
         plan = create_prompt_only_plan(
             prompt=request.prompt,
             scene_count=scene_count,
-            target_scene_duration_seconds=effective_scene_seconds,
+            target_scene_duration_seconds=planned_scene_seconds,
         )
 
     if (
@@ -135,7 +179,6 @@ def run_factory_generation(
     gpu: str | None = None
     previous_frame: Path | None = None
     continuity_frames: list[Path] = []
-    remaining = float(request.target_duration_seconds)
     continuity_warnings: list[str] = []
     continuity_regenerations = 0
     qc_attempted = False
@@ -147,10 +190,9 @@ def run_factory_generation(
 
     try:
         for index, scene in enumerate(plan.scenes):
-            duration = min(effective_scene_seconds, remaining)
-            remaining = max(0.0, remaining - duration)
-            if duration < 1.0:
+            if index >= len(scene_durations):
                 break
+            duration = scene_durations[index]
 
             base_progress = 12 + int((index / max(1, scene_count)) * 66)
 
@@ -466,7 +508,7 @@ def run_factory_generation(
             target_duration_seconds=request.target_duration_seconds,
             actual_duration_seconds=info.duration_seconds,
             scene_count=len(source_paths),
-            scene_duration_seconds=effective_scene_seconds,
+            scene_duration_seconds=planned_scene_seconds,
             aspect_ratio=request.aspect_ratio,
             quality=request.quality,
             quality_note=quality_note(request.quality, request.aspect_ratio),

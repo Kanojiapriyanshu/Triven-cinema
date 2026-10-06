@@ -41,20 +41,21 @@ class Settings(BaseSettings):
 
     default_render_quality: str = "preview"
     default_decoder: str = "conv"
-    default_scene_duration_seconds: float = 5.0
+    default_scene_duration_seconds: float = 20.0
 
-    # Customer-facing duration profiles. Long clips are rendered as safe native
-    # LTX chunks and chained with first-frame continuity, then composed once.
-    # Keep the native chunk conservative until a longer single-pass profile has
-    # been benchmarked on the deployed B200 worker.
-    ltx_native_chunk_seconds: float = 10.0
-    max_preview_scene_seconds: float = 10.0
+    # LTX-2.5's native duration head is designed around clips up to 20 seconds.
+    # Factory therefore treats 15-20s as the normal single-pass scene range.
+    # 1080p can optionally expose a 30s DFR single-pass experiment on B200; it is
+    # explicit num-frames generation, not application-level chunking/stitching.
+    ltx_native_chunk_seconds: float = 20.0
+    max_preview_scene_seconds: float = 20.0
     max_1080p_scene_seconds: float = 30.0
     max_4k_scene_seconds: float = 15.0
     max_factory_duration_seconds: int = 300
-    # Quality-first Factory shots are intentionally shorter. Independent long shots
-    # increase identity/cardinality drift even when temporal windowing is available.
-    cinema_max_scene_seconds: float = 10.0
+    factory_min_scene_seconds: float = 15.0
+    factory_standard_max_scene_seconds: float = 20.0
+    factory_enable_30s_1080p_single_pass: bool = True
+    factory_experimental_1080p_scene_seconds: float = 30.0
     factory_allow_fallback_final: bool = False
 
     # Final-render audio guard. Gemini inspects rendered audio for gibberish or

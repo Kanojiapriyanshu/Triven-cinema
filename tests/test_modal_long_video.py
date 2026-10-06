@@ -32,18 +32,20 @@ class ModalLongVideoTests(unittest.TestCase):
         self.assertGreater(ltx_worker.temporal_chunk_count(30), 1)
         self.assertEqual(ltx_worker.LONG_VIDEO_PIXEL_FRAMES, 97)
 
-    def test_short_clip_remains_single_window(self):
+    def test_twenty_second_distilled_clip_remains_single_window(self):
         command = ltx_worker.build_command(
-            prompt="A five second cinematic shot.",
+            prompt="A twenty second continuous cinematic shot.",
             output_path=Path("/tmp/out.mp4"),
             width=1024,
             height=576,
-            duration_seconds=5,
+            duration_seconds=20,
             seed=42,
             decoder="conv",
         )
         self.assertNotIn("--chunk-pixel-frames", command)
-        self.assertEqual(ltx_worker.temporal_chunk_count(5), 1)
+        self.assertEqual(ltx_worker.temporal_chunk_count(20), 1)
+        frames_index = command.index("--num-frames") + 1
+        self.assertEqual(command[frames_index], "481")
 
     def test_dfr_uses_production_pipeline_detailing_lora_and_diffusion_vae(self):
         command = ltx_worker.build_command(
@@ -62,6 +64,36 @@ class ModalLongVideoTests(unittest.TestCase):
         self.assertIn("ltx-2.5-22b-ic-lora-pixel-spatial-upscaler-x2-1.0.safetensors", joined)
         self.assertIn("ltx-2.5-video-vae-bf16.safetensors", joined)
         self.assertNotIn("--chunk-pixel-frames", command)
+
+    def test_dfr_thirty_second_1080p_is_one_pipeline_call_without_chunk_flags(self):
+        command = ltx_worker.build_command(
+            prompt="One continuous thirty second cinematic shot with no artificial chunk cuts.",
+            output_path=Path("/tmp/out.mp4"),
+            width=1920,
+            height=1088,
+            duration_seconds=30,
+            seed=42,
+            decoder="diffusion",
+            render_mode="dfr",
+        )
+        self.assertIn("ltx_pipelines.dfr_pipeline", command)
+        self.assertNotIn("--chunk-pixel-frames", command)
+        self.assertNotIn("--chunk-carry-frames", command)
+        frames_index = command.index("--num-frames") + 1
+        self.assertEqual(command[frames_index], "721")
+
+    def test_dfr_rejects_more_than_thirty_seconds_single_pass(self):
+        with self.assertRaises(ValueError):
+            ltx_worker.build_command(
+                prompt="An excessively long single-pass shot.",
+                output_path=Path("/tmp/out.mp4"),
+                width=1920,
+                height=1088,
+                duration_seconds=31,
+                seed=42,
+                decoder="diffusion",
+                render_mode="dfr",
+            )
 
 
 if __name__ == "__main__":

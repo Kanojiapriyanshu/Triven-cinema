@@ -23,12 +23,14 @@ def frames_for_duration(duration_seconds: float, fps: int = 24) -> int:
     return blocks * 8 + 1
 
 
-# DistilledPipeline supports native temporal windowing for long video. Final
-# Cinema renders intentionally stay <=10s and use DFR instead of depending on
-# very long windows for character-heavy narrative shots.
+# LTX-2.5's native duration range reaches 20s, so 15/20s clips are kept as
+# one full generation. Distilled clips above 20s may use temporal windows. DFR
+# final scenes never receive chunk flags: 15/20s and the explicit 30s 1080p
+# experiment are submitted as a single pipeline call without application cuts.
 LONG_VIDEO_PIXEL_FRAMES = 97
 LONG_VIDEO_CARRY_FRAMES = 25
-LONG_VIDEO_MIN_DURATION_SECONDS = 10.0
+LONG_VIDEO_MIN_DURATION_SECONDS = 20.0
+DFR_SINGLE_PASS_MAX_SECONDS = 30.0
 
 
 def temporal_chunk_count(
@@ -63,6 +65,10 @@ def build_command(
     mode = (render_mode or "distilled").strip().lower()
     if mode not in {"distilled", "dfr"}:
         raise ValueError(f"Unsupported LTX render mode: {render_mode}")
+    if mode == "dfr" and duration_seconds > DFR_SINGLE_PASS_MAX_SECONDS + 1e-6:
+        raise ValueError(
+            f"DFR single-pass scenes are limited to {DFR_SINGLE_PASS_MAX_SECONDS:g}s in this deployment."
+        )
 
     # Production DFR needs the diffusion decoder. Preview can still use conv.
     video_vae = VIDEO_VAE_DIFFUSION if (mode == "dfr" or decoder == "diffusion") else VIDEO_VAE_CONV

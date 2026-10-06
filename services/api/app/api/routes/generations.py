@@ -384,12 +384,12 @@ async def generation_capabilities():
             {
                 "id": "preview",
                 "label": "Source preview",
-                "description": "Validated LTX source render for iteration; up to 10 seconds per scene by default.",
+                "description": "LTX-2.5 preview profile; Factory scenes use 15-20 second single-pass shots.",
             },
             {
                 "id": "1080p",
                 "label": "1080p master",
-                "description": "Production LTX-2.5 DFR source render with diffusion decode; Factory mode caps character-heavy shots to 10 seconds before final 1080p delivery.",
+                "description": "Production LTX-2.5 DFR source render with diffusion decode; Factory uses 15-20s single-pass shots, with an optional experimental 30s B200 single-pass shot.",
             },
             {
                 "id": "4k",

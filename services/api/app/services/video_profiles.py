@@ -47,6 +47,50 @@ def validate_scene_duration(*, quality: str, duration_seconds: float) -> None:
         )
 
 
+
+def validate_factory_scene_duration(*, quality: str, duration_seconds: float) -> None:
+    """Validate Factory scene length without silently shortening the user's shot.
+
+    Normal Factory shots are true 15-20 second single-pass LTX generations. 1080p
+    may additionally expose a 30 second B200/DFR experiment. 4K remains capped at
+    the validated 15 second profile.
+    """
+    duration = float(duration_seconds)
+    minimum = max(1.0, float(settings.factory_min_scene_seconds))
+    standard_max = max(minimum, float(settings.factory_standard_max_scene_seconds))
+
+    if duration + 1e-6 < minimum:
+        raise ValueError(f"Factory scenes must be at least {minimum:g}s.")
+
+    if quality == "4k":
+        maximum = max_scene_duration_seconds("4k")
+        if duration > maximum + 1e-6:
+            raise ValueError(f"4K Factory scenes are limited to {maximum:g}s in the validated profile.")
+        return
+
+    if duration <= standard_max + 1e-6:
+        validate_scene_duration(quality=quality, duration_seconds=duration)
+        return
+
+    experimental = float(settings.factory_experimental_1080p_scene_seconds)
+    allow_experimental = (
+        quality == "1080p"
+        and settings.factory_enable_30s_1080p_single_pass
+        and abs(duration - experimental) <= 1e-6
+    )
+    if allow_experimental:
+        validate_scene_duration(quality=quality, duration_seconds=duration)
+        return
+
+    if quality == "1080p" and settings.factory_enable_30s_1080p_single_pass:
+        raise ValueError(
+            f"1080p Factory scenes use {minimum:g}-{standard_max:g}s for the validated single-pass profile, "
+            f"or exactly {experimental:g}s for the experimental B200 single-pass profile."
+        )
+    raise ValueError(
+        f"Factory scenes use {minimum:g}-{standard_max:g}s in the validated single-pass profile."
+    )
+
 def duration_profile() -> dict[str, float]:
     return {
         "preview": max_scene_duration_seconds("preview"),

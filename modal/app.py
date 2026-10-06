@@ -159,7 +159,7 @@ def generate_video(
         "prompt": prompt,
         "render_details": (
             f"{width}x{height} · {duration_seconds:.2f}s · "
-            f"{'DFR production' if mode == 'dfr' else 'Distilled preview'} · "
+            f"{'DFR production · single-pass scene' if mode == 'dfr' else 'Distilled preview'} · "
             f"{'diffusion' if mode == 'dfr' else decoder} decoder · {GPU_TYPE}"
             + (" · first-frame continuity" if reference_image_bytes else "")
         ),

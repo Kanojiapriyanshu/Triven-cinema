@@ -18,8 +18,8 @@ from app.schemas.youtube import YouTubePrivacy
 
 class FactoryGenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=10, max_length=50000)
-    target_duration_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
-    scene_duration_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
+    target_duration_seconds: float = Field(default=30.0, ge=15.0, le=300.0)
+    scene_duration_seconds: float = Field(default=20.0, ge=15.0, le=30.0)
     aspect_ratio: AspectRatio = "16:9"
     quality: RenderQuality = "1080p"
     audio_mode: AudioMode = "mastered"

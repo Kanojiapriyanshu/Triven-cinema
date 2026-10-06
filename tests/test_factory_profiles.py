@@ -3,9 +3,9 @@ import unittest
 from app.schemas.factory import FactoryGenerationRequest
 from app.schemas.generation import ScenePlanRequest, VideoGenerationRequest
 from app.services.video_combiner import delivery_dimensions
-from app.services.video_profiles import duration_profile, validate_scene_duration
+from app.services.video_profiles import duration_profile, validate_factory_scene_duration, validate_scene_duration
 from app.services.scene_planner import create_scene_plan
-from app.services.factory_service import _scene_seed
+from app.services.factory_service import _factory_scene_durations, _scene_seed
 
 
 class FactoryProfileTests(unittest.TestCase):
@@ -36,13 +36,37 @@ class FactoryProfileTests(unittest.TestCase):
         )
         self.assertEqual(request.target_duration_seconds, 120)
 
-    def test_factory_defaults_to_ten_second_cinema_scenes(self):
+    def test_factory_defaults_to_twenty_second_single_pass_scenes(self):
         request = FactoryGenerationRequest(
             prompt="A cinematic expedition progresses across a snowy forest with synchronized natural sound."
         )
-        self.assertEqual(request.scene_duration_seconds, 10)
+        self.assertEqual(request.scene_duration_seconds, 20)
         self.assertEqual(request.continuity_qc_mode, "strict")
         self.assertEqual(request.continuity_strength, 0.85)
+
+    def test_factory_rejects_sub_fifteen_second_scene(self):
+        with self.assertRaises(ValueError):
+            FactoryGenerationRequest(
+                prompt="A cinematic expedition progresses across a snowy forest with synchronized natural sound.",
+                scene_duration_seconds=10,
+            )
+
+    def test_factory_validates_standard_fifteen_and_twenty_second_scenes(self):
+        validate_factory_scene_duration(quality="1080p", duration_seconds=15)
+        validate_factory_scene_duration(quality="1080p", duration_seconds=20)
+
+    def test_factory_allows_experimental_thirty_second_1080p_single_pass(self):
+        validate_factory_scene_duration(quality="1080p", duration_seconds=30)
+
+    def test_factory_keeps_4k_at_fifteen_seconds(self):
+        validate_factory_scene_duration(quality="4k", duration_seconds=15)
+        with self.assertRaises(ValueError):
+            validate_factory_scene_duration(quality="4k", duration_seconds=20)
+
+    def test_factory_does_not_create_sub_fifteen_second_tail_scene(self):
+        self.assertEqual(_factory_scene_durations(30, 20, 15), [15.0, 15.0])
+        self.assertEqual(_factory_scene_durations(60, 20, 15), [20.0, 20.0, 20.0])
+        self.assertEqual(_factory_scene_durations(60, 30, 15), [30.0, 30.0])
 
     def test_factory_uses_distinct_deterministic_seed_per_scene(self):
         seeds = [_scene_seed(42, index, 0) for index in range(6)]

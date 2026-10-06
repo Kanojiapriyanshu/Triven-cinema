@@ -60,9 +60,15 @@ type FinalVideo = {
 } | null;
 
 const DURATION_OPTIONS: Record<RenderQuality, number[]> = {
-  preview: [1, 3, 5, 10],
+  preview: [5, 10, 15, 20],
   "1080p": [5, 10, 15, 20, 30],
   "4k": [5, 10, 15],
+};
+
+const FACTORY_SCENE_OPTIONS: Record<RenderQuality, number[]> = {
+  preview: [15, 20],
+  "1080p": [15, 20, 30],
+  "4k": [15],
 };
 
 const FACTORY_TARGETS = [30, 60, 120, 180, 300];
@@ -133,7 +139,7 @@ export default function Home() {
   const [sceneCount, setSceneCount] = useState(2);
   const [durationSeconds, setDurationSeconds] = useState(15);
   const [factoryTargetSeconds, setFactoryTargetSeconds] = useState(30);
-  const [factorySceneSeconds, setFactorySceneSeconds] = useState(10);
+  const [factorySceneSeconds, setFactorySceneSeconds] = useState(20);
   const [quality, setQuality] = useState<RenderQuality>("1080p");
   const [audioMode, setAudioMode] = useState<AudioMode>("mastered");
   const [audioDirection, setAudioDirection] = useState("Natural synchronized ambience and Foley matching every visible action.");
@@ -172,9 +178,7 @@ export default function Home() {
   const [notice, setNotice] = useState("");
 
   const durationOptions = DURATION_OPTIONS[quality];
-  const factoryDurationOptions = quality === "preview"
-    ? durationOptions
-    : durationOptions.filter((value) => value <= 10);
+  const factoryDurationOptions = FACTORY_SCENE_OPTIONS[quality];
   const isBusy = planning || directGenerating || factoryGenerating || generatingScene !== null || creatingFinal;
   const renderedSceneCount = Object.keys(renderedVideos).length;
   const allScenesRendered = !!result && result.scenes.length > 0 && result.scenes.every((scene) => Boolean(renderedVideos[scene.id]));
@@ -233,7 +237,7 @@ export default function Home() {
 
   useEffect(() => {
     const options = DURATION_OPTIONS[quality];
-    const factoryOptions = quality === "preview" ? options : options.filter((value) => value <= 10);
+    const factoryOptions = FACTORY_SCENE_OPTIONS[quality];
     if (!options.includes(durationSeconds)) setDurationSeconds(options[Math.min(2, options.length - 1)]);
     if (!factoryOptions.includes(factorySceneSeconds)) setFactorySceneSeconds(factoryOptions[factoryOptions.length - 1]);
   }, [quality, durationSeconds, factorySceneSeconds]);
@@ -661,7 +665,11 @@ export default function Home() {
                     </Control>
                     <Control label="Scene runtime">
                       <select className="control w-full" value={factorySceneSeconds} onChange={(e) => setFactorySceneSeconds(Number(e.target.value))}>
-                        {factoryDurationOptions.map((value) => <option key={value} value={value}>{value}s / scene</option>)}
+                        {factoryDurationOptions.map((value) => (
+                          <option key={value} value={value}>
+                            {value === 30 && quality === "1080p" ? "30s / scene · experimental one-pass" : `${value}s / scene · one-pass`}
+                          </option>
+                        ))}
                       </select>
                     </Control>
                   </>
@@ -727,7 +735,7 @@ export default function Home() {
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-[var(--text-muted)]">
                   <label className="flex items-center gap-2"><input type="checkbox" checked={enhancePrompt} onChange={(e) => setEnhancePrompt(e.target.checked)} /> AI Enhancement (Gemini planning + strict AI QC)</label>
                   <span>{enhancePrompt ? "Gemini creates shot-specific story beats" : "Direct mode sequences your own prompt across shots"}</span>
-                  <span>{capabilities ? `Native chunk ${capabilities.native_chunk_seconds}s` : "Long clips chain native LTX segments"}</span>
+                  <span>{mode === "factory" ? "15-20s native one-pass scenes · 30s experimental @1080p" : capabilities ? `Native one-pass target ${capabilities.native_chunk_seconds}s` : "Native LTX generation"}</span>
                   <span>{quality === "4k" ? "4K is a delivery master, not a native-source claim" : "Synchronized LTX audio preserved"}</span>
                 </div>
                 <button type="submit" disabled={isBusy} className="flex h-12 min-w-[190px] items-center justify-center gap-2 rounded-xl bg-[var(--primary-bg)] px-6 text-sm font-semibold text-[var(--primary-fg)] transition hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-40">
