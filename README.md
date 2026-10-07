@@ -16,6 +16,8 @@ Triven Cinema is an AI video factory: prompt input, continuity-locked storyboard
 - LTX-2.5 native temporal-window rendering for long Modal scenes with carry/blend overlap.
 - Prompt-to-finished-video Factory mode with strict scene continuity and up to 300s total runtime by default.
 - Persistent asynchronous video jobs in `storage/jobs/jobs.sqlite3`.
+- Demo email + random six-digit OTP login with signed HttpOnly account sessions.
+- Account-owned Previous Chats in `storage/chats/chats.sqlite3`, with safe one-time migration from the old browser-only history.
 - UI polling with coarse real job stages: queued -> initializing -> rendering -> delivery -> probing -> complete.
 - Per-scene source previews and regeneration.
 - Existing previews are reused when combining; missing scenes only are rendered.
@@ -100,10 +102,12 @@ The web UI now defaults to Modal production but still allows ZeroGPU development
 Final-quality Cinema Studio renders now expose three realism profiles:
 
 - `Standard`: existing LTX production path without the extra refinement pass.
-- `Real Skin` (Studio default): DFR for normal scenes, or Ingredients IC-LoRA when reusable identity Elements are active, with the diffusion video VAE, followed by Lightricks' official `LTX-2.5-22b-IC-LoRA-Refine-Details` tiled video-to-video pass. The refiner is prompted only for photographic texture/skin/hair/fabric detail so it does not rewrite the user's scene prompt.
-- `Identity Max`: the same Real Skin final path, intended to be used with a Character Element in `Identity` mode. Make a sharp real photograph the Element's primary/canonical reference and add supporting angles when available.
+- `Real Skin` (Studio default): DFR for normal scenes, or Ingredients IC-LoRA when reusable identity Elements are active, with the diffusion video VAE, followed by Lightricks' official `LTX-2.5-22b-IC-LoRA-Refine-Details` tiled video-to-video pass. The refiner uses generic photographic-detail wording so each tile rebuilds texture without being told to repaint a specific face or subject.
+- `Identity Max`: the same Real Skin final path, but it requires a Character Element in `Identity` mode so the base generation is conditioned by a sharp real reference photograph before the final tiled detail reconstruction.
 
 The Refine Details adapter is not trained for audio generation. Triven therefore refines the picture, then remuxes the untouched audio stream from the original LTX scene so speech timing and synchronized sound are not replaced by the texture pass. Preview renders skip this expensive second pass.
+
+Triven does not blindly feed the raw Character portrait into Refine Details at frame `-1`. That optional LTX reference is spatial/tile sensitive and should be aligned to the output canvas; an unaligned portrait can hurt identity consistency. Character references remain in the base identity-conditioning stage until subject-aware alignment is implemented.
 
 Important: the official DFR pipeline still expects the **distilled** LTX-2.5 transformer; do not replace it with the full/dev transformer. The full/dev checkpoint is for other guided pipelines, not DFR.
 

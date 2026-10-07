@@ -97,6 +97,20 @@ class Settings(BaseSettings):
     continuity_qc_timeout_seconds: float = 12.0
     continuity_qc_max_frames: int = 3
 
+    # Demo account login. The current devansh.info demo intentionally returns the
+    # generated OTP to the browser so testers can sign in without an email provider.
+    # Set DEMO_AUTH_SHOW_OTP=false before treating this as production authentication.
+    auth_enabled: bool = True
+    demo_auth_show_otp: bool = True
+    auth_otp_ttl_seconds: int = 600
+    auth_otp_max_attempts: int = 5
+    auth_session_days: int = 30
+
+    # Account-owned Studio history. Browser localStorage is only a cache; the
+    # canonical previous-chat list lives in SQLite and follows the signed-in user.
+    chat_history_limit: int = 100
+    chat_workspace_max_bytes: int = 1_500_000
+
     # Workspace/session signing. Required when billing or YouTube integrations
     # are enabled in production. Never commit the production value.
     triven_secret_key: str = ""

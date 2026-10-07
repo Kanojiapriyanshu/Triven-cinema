@@ -14,18 +14,26 @@ import {
   createCheckout,
   createFactoryGenerationJob,
   createVideoGenerationJob,
+  deleteChatHistoryItem,
   disconnectYouTube,
   generateScenePlan,
+  getAuthMe,
   getBillingCatalog,
   getBillingMe,
   getGenerationCapabilities,
   getYouTubeStatus,
+  listChatHistory,
   listElements,
+  logoutCinema,
+  requestLoginOtp,
+  saveChatHistoryItem,
   updateElement,
   verifyCheckout,
+  verifyLoginOtp,
   waitForFactoryGenerationJob,
   waitForVideoGenerationJob,
 } from "@/lib/api/cinema";
+import type { AuthUser, ServerChatSession } from "@/lib/api/cinema";
 import type {
   AspectRatio,
   AudioMode,
@@ -117,7 +125,8 @@ type StudioChatSession = {
   workspace: StudioChatWorkspace;
 };
 
-const CHAT_HISTORY_STORAGE_KEY = "triven-cinema-chat-history-v1";
+const CHAT_HISTORY_STORAGE_PREFIX = "triven-cinema-chat-history-v2";
+const LEGACY_CHAT_HISTORY_STORAGE_KEY = "triven-cinema-chat-history-v1";
 const DEFAULT_AUDIO_DIRECTION = "Natural synchronized ambience and Foley matching every visible action.";
 
 function createEmptyChatWorkspace(): StudioChatWorkspace {
@@ -192,11 +201,29 @@ function createChatSession(workspace = createEmptyChatWorkspace()): StudioChatSe
   };
 }
 
-function readStoredChatSessions() {
-  if (typeof window === "undefined") return [] as StudioChatSession[];
+function chatFromServer(entry: ServerChatSession): StudioChatSession {
+  return {
+    id: entry.id,
+    title: entry.title || chatTitleFromPrompt(String(entry.workspace.prompt || "")),
+    createdAt: entry.created_at,
+    updatedAt: entry.updated_at,
+    workspace: normalizeChatWorkspace(entry.workspace as Partial<StudioChatWorkspace>),
+  };
+}
+
+function chatToServer(entry: StudioChatSession): ServerChatSession {
+  return {
+    id: entry.id,
+    title: entry.title,
+    created_at: entry.createdAt,
+    updated_at: entry.updatedAt,
+    workspace: entry.workspace as unknown as Record<string, unknown>,
+  };
+}
+
+function parseStoredChatSessions(raw: string | null) {
+  if (!raw) return [] as StudioChatSession[];
   try {
-    const raw = window.localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
-    if (!raw) return [] as StudioChatSession[];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [] as StudioChatSession[];
     return parsed
@@ -219,10 +246,24 @@ function readStoredChatSessions() {
   }
 }
 
-function persistChatSessions(sessions: StudioChatSession[]) {
+function chatStorageKey(userId: string | null | undefined) {
+  return userId ? `${CHAT_HISTORY_STORAGE_PREFIX}:${userId}` : null;
+}
+
+function readStoredChatSessions(userId: string | null | undefined, includeLegacy = false) {
+  if (typeof window === "undefined") return [] as StudioChatSession[];
+  const key = chatStorageKey(userId);
+  const scoped = key ? parseStoredChatSessions(window.localStorage.getItem(key)) : [];
+  if (scoped.length || !includeLegacy) return scoped;
+  return parseStoredChatSessions(window.localStorage.getItem(LEGACY_CHAT_HISTORY_STORAGE_KEY));
+}
+
+function persistChatSessions(sessions: StudioChatSession[], userId: string | null | undefined) {
   if (typeof window === "undefined") return;
+  const key = chatStorageKey(userId);
+  if (!key) return;
   try {
-    window.localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(sessions));
+    window.localStorage.setItem(key, JSON.stringify(sessions));
   } catch {
     // A full localStorage should never break the actual Cinema generation flow.
   }
@@ -385,6 +426,14 @@ function PromptHighlight({ text, elements }: { text: string; elements: CinemaEle
 
 export default function Home() {
   const [theme, setTheme] = useState<ThemeMode>("light");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginOtp, setLoginOtp] = useState("");
+  const [demoOtp, setDemoOtp] = useState<string | null>(null);
+  const [loginStep, setLoginStep] = useState<"email" | "otp">("email");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState("");
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<GenerationMode>("factory");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("16:9");
@@ -487,7 +536,7 @@ export default function Home() {
       version_id: element.current_version_id,
       handle: element.handle,
       reference_mode: elementModes[element.id] || "identity",
-      strength: elementStrengths[element.id] ?? 1.0,
+      strength: Math.max(0, Math.min(1, elementStrengths[element.id] ?? 1.0)),
       apply_to_all_scenes: Boolean(elementApplyAll[element.id]),
     })),
     [referencedElements, activeElementLimit, elementModes, elementStrengths, elementApplyAll]
@@ -525,6 +574,23 @@ export default function Home() {
   );
 
   useEffect(() => {
+    let active = true;
+    async function restoreLogin() {
+      try {
+        const session = await getAuthMe();
+        if (!active) return;
+        setAuthUser(session.authenticated ? session.user : null);
+      } catch {
+        if (active) setAuthUser(null);
+      } finally {
+        if (active) setAuthChecking(false);
+      }
+    }
+    void restoreLogin();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     const storedTheme = window.localStorage.getItem("triven-cinema-theme");
     const initialTheme: ThemeMode = storedTheme === "dark" ? "dark" : "light";
     document.documentElement.dataset.theme = initialTheme;
@@ -542,14 +608,44 @@ export default function Home() {
   }
 
   useEffect(() => {
-    // A page visit always starts as a fresh, unsaved draft. Existing chats remain
-    // available in history but none is auto-selected or restored on load.
-    const stored = readStoredChatSessions();
-    setChatSessions(stored);
+    if (!authUser) {
+      setChatSessions([]);
+      setActiveChatId(null);
+      setChatHistoryReady(false);
+      return;
+    }
+    let active = true;
+    setChatHistoryReady(false);
     setActiveChatId(null);
-    persistChatSessions(stored);
-    setChatHistoryReady(true);
-  }, []);
+    async function loadHistory() {
+      try {
+        const response = await listChatHistory();
+        if (!active) return;
+        let sessions = response.chats.map(chatFromServer).sort((a, b) => b.updatedAt - a.updatedAt);
+        if (sessions.length === 0) {
+          // One-time migration from the pre-login browser history. Only migrate
+          // after a successful empty server response, so shared-browser data is
+          // never used as a fallback for an existing account.
+          const localMigration = readStoredChatSessions(authUser.id, true);
+          if (localMigration.length) {
+            sessions = localMigration;
+            void Promise.allSettled(localMigration.map((item) => saveChatHistoryItem(chatToServer(item))));
+            window.localStorage.removeItem(LEGACY_CHAT_HISTORY_STORAGE_KEY);
+          }
+        }
+        setChatSessions(sessions);
+        persistChatSessions(sessions, authUser.id);
+      } catch {
+        if (!active) return;
+        // Server history is canonical. Offline fallback is account-scoped only.
+        setChatSessions(readStoredChatSessions(authUser.id));
+      } finally {
+        if (active) setChatHistoryReady(true);
+      }
+    }
+    void loadHistory();
+    return () => { active = false; };
+  }, [authUser?.id]);
 
   useEffect(() => {
     if (!chatHistoryReady) return;
@@ -594,7 +690,7 @@ export default function Home() {
       setActiveChatId(session.id);
       setChatSessions((current) => {
         const sorted = [session, ...current].sort((a, b) => b.updatedAt - a.updatedAt);
-        persistChatSessions(sorted);
+        persistChatSessions(sorted, authUser?.id);
         return sorted;
       });
       return;
@@ -615,7 +711,7 @@ export default function Home() {
       });
       if (!found) return current;
       const sorted = next.sort((a, b) => b.updatedAt - a.updatedAt);
-      persistChatSessions(sorted);
+      persistChatSessions(sorted, authUser?.id);
       return sorted;
     });
   }, [
@@ -654,6 +750,19 @@ export default function Home() {
   ]);
 
   useEffect(() => {
+    if (!authUser || !chatHistoryReady || !activeChatId) return;
+    const session = chatSessions.find((item) => item.id === activeChatId);
+    if (!session) return;
+    const timer = window.setTimeout(() => {
+      void saveChatHistoryItem(chatToServer(session)).catch(() => {
+        // Keep the local cache as a resilience fallback; the next edit retries.
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [authUser?.id, chatHistoryReady, activeChatId, chatSessions]);
+
+  useEffect(() => {
+    if (!authUser) return;
     let active = true;
     async function bootstrap() {
       setElementsLoading(true);
@@ -700,7 +809,7 @@ export default function Home() {
     }
     void bootstrap();
     return () => { active = false; };
-  }, []);
+  }, [authUser?.id]);
 
   function applyChatWorkspace(rawWorkspace: StudioChatWorkspace) {
     const workspace = normalizeChatWorkspace(rawWorkspace);
@@ -753,7 +862,7 @@ export default function Home() {
     // The active chat is already kept in chatSessions by the workspace sync effect.
     // New Chat only switches the UI to a fresh unsaved draft; it will not appear in
     // Previous chats until the creator starts typing a prompt.
-    persistChatSessions(chatSessions);
+    persistChatSessions(chatSessions, authUser?.id);
     setActiveChatId(null);
     applyChatWorkspace(createEmptyChatWorkspace());
   }
@@ -766,10 +875,10 @@ export default function Home() {
     }
     setActiveChatId(session.id);
     applyChatWorkspace(session.workspace);
-    persistChatSessions(chatSessions);
+    persistChatSessions(chatSessions, authUser?.id);
   }
 
-  function handleDeleteChat(chatId: string) {
+  async function handleDeleteChat(chatId: string) {
     // The current working chat is intentionally protected from deletion.
     if (chatId === activeChatId) return;
     const target = chatSessions.find((session) => session.id === chatId);
@@ -778,7 +887,13 @@ export default function Home() {
 
     const remaining = chatSessions.filter((session) => session.id !== chatId);
     setChatSessions(remaining);
-    persistChatSessions(remaining);
+    persistChatSessions(remaining, authUser?.id);
+    try {
+      await deleteChatHistoryItem(chatId);
+    } catch (err) {
+      setError(errorMessage(err, "Unable to delete chat from your account."));
+      setChatSessions((current) => [target, ...current].sort((a, b) => b.updatedAt - a.updatedAt));
+    }
   }
 
   function handleQualityChange(nextQuality: RenderQuality) {
@@ -1260,6 +1375,57 @@ export default function Home() {
     }
   }
 
+  async function handleRequestLoginOtp(event: FormEvent) {
+    event.preventDefault();
+    setLoginBusy(true);
+    setLoginError("");
+    try {
+      const response = await requestLoginOtp(loginEmail);
+      setDemoOtp(response.demo_otp);
+      setLoginOtp(response.demo_otp || "");
+      setLoginStep("otp");
+    } catch (err) {
+      setLoginError(errorMessage(err, "Unable to create login code."));
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function handleVerifyLoginOtp(event: FormEvent) {
+    event.preventDefault();
+    setLoginBusy(true);
+    setLoginError("");
+    try {
+      const response = await verifyLoginOtp(loginEmail, loginOtp);
+      if (!response.authenticated || !response.user) throw new Error("Login did not return an account session.");
+      setAuthUser(response.user);
+      setDemoOtp(null);
+      setLoginOtp("");
+      setLoginStep("email");
+    } catch (err) {
+      setLoginError(errorMessage(err, "Unable to sign in."));
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    if (isBusy) {
+      setNotice("Finish the current render before signing out.");
+      return;
+    }
+    try {
+      await logoutCinema();
+    } catch {
+      // Clear the local UI even if the network response is interrupted.
+    }
+    setAuthUser(null);
+    setChatSessions([]);
+    setActiveChatId(null);
+    setChatHistoryReady(false);
+    applyChatWorkspace(createEmptyChatWorkspace());
+  }
+
   async function handleYouTubeConnection() {
     setIntegrationBusy(true);
     setError("");
@@ -1280,6 +1446,40 @@ export default function Home() {
     }
   }
 
+  if (authChecking) {
+    return (
+      <main className="cinema-login-page bg-[var(--page-bg)] text-[var(--text)]">
+        <div className="cinema-login-card cinema-login-card-loading"><div className="studio-logo-mark">T</div><Spinner /><span>Opening Cinema Studio…</span></div>
+      </main>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <main className="cinema-login-page bg-[var(--page-bg)] text-[var(--text)]">
+        <section className="cinema-login-card">
+          <div className="cinema-login-brand"><div className="studio-logo-mark">T</div><div><strong>Triven Cinema</strong><span>AI filmmaking studio</span></div></div>
+          <div className="cinema-login-copy"><span className="cinema-login-kicker">Cinema Studio</span><h1>{loginStep === "email" ? "Sign in to your studio" : "Enter your login code"}</h1><p>{loginStep === "email" ? "Your chats, Elements and generation workspace will stay connected to this email." : `Code created for ${loginEmail}.`}</p></div>
+          {loginStep === "email" ? (
+            <form onSubmit={handleRequestLoginOtp} className="cinema-login-form">
+              <label>Email address<input type="email" required autoComplete="email" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} placeholder="you@example.com" /></label>
+              <button type="submit" disabled={loginBusy || !loginEmail.trim()}>{loginBusy ? <Spinner /> : null}<span>Continue</span></button>
+            </form>
+          ) : (
+            <form onSubmit={handleVerifyLoginOtp} className="cinema-login-form">
+              {demoOtp ? <div className="cinema-demo-otp"><span>Demo OTP</span><strong>{demoOtp}</strong><small>This code is shown only because demo OTP mode is enabled.</small></div> : null}
+              <label>One-time code<input inputMode="numeric" autoComplete="one-time-code" required value={loginOtp} onChange={(event) => setLoginOtp(event.target.value.replace(/\D/g, "").slice(0, 8))} placeholder="6-digit code" /></label>
+              <button type="submit" disabled={loginBusy || loginOtp.length < 4}>{loginBusy ? <Spinner /> : null}<span>Enter Studio</span></button>
+              <button type="button" className="cinema-login-back" onClick={() => { setLoginStep("email"); setLoginOtp(""); setDemoOtp(null); setLoginError(""); }}>Use another email</button>
+            </form>
+          )}
+          {loginError ? <div className="cinema-login-error">{loginError}</div> : null}
+          <div className="cinema-login-footnote">Demo access on devansh.info · account history is saved server-side.</div>
+        </section>
+      </main>
+    );
+  }
+
   const finalActionLabel = creatingFinal
     ? "Creating final master"
     : allScenesRendered
@@ -1294,7 +1494,7 @@ export default function Home() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="truncate text-sm font-semibold text-[var(--text-strong)]">{activeChatTitle}</span>
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" title="Saved locally" />
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" title="Saved to your account" />
             </div>
             <div className="text-[10px] text-[var(--text-muted)]">Triven Cinema Studio</div>
           </div>
@@ -1316,6 +1516,7 @@ export default function Home() {
           </div>
           {billingCatalog?.enabled && billingMe ? <span className="studio-status-pill">{formatCredits(billingMe.balance_seconds)} credits</span> : null}
           {youtube?.connected ? <span className="studio-status-pill">YouTube connected</span> : null}
+          <div className="studio-account-pill"><span>{authUser.email}</span><button type="button" onClick={handleLogout} disabled={isBusy}>Sign out</button></div>
         </div>
       </header>
 
@@ -1338,6 +1539,7 @@ export default function Home() {
           <div className="studio-chat-history">
             <div className="studio-chat-history-title">Previous chats</div>
             <div className="studio-chat-history-list" role="list" aria-label="Previous Cinema chats">
+              {chatHistoryReady && sortedChatSessions.length === 0 ? <div className="studio-chat-history-empty">No previous chats yet.</div> : null}
               {sortedChatSessions.map((session) => {
                 const active = session.id === activeChatId;
                 return (
@@ -1524,7 +1726,7 @@ export default function Home() {
                   <div className="studio-inspector-eyebrow">Cinema Studio</div>
                   <div className="studio-inspector-title">Generation mode</div>
                 </div>
-                <span className="studio-mini-pill">v8</span>
+                <span className="studio-mini-pill">v10</span>
               </div>
               <div className="studio-mode-switch">
                 {(["factory", "storyboard", "direct"] as GenerationMode[]).map((item) => (
@@ -1599,8 +1801,8 @@ export default function Home() {
                         </select>
                       </label>
                       <label className="studio-field-label">Reference strength
-                        <input type="range" min="0.55" max="1.25" step="0.05" value={elementStrengths[selectedElement.id] ?? 1} onChange={(e) => setElementStrengths((current) => ({ ...current, [selectedElement.id]: Number(e.target.value) }))} className="studio-range" />
-                        <span className="studio-range-value">{(elementStrengths[selectedElement.id] ?? 1).toFixed(2)}</span>
+                        <input type="range" min="0.55" max="1" step="0.05" value={Math.min(1, elementStrengths[selectedElement.id] ?? 1)} onChange={(e) => setElementStrengths((current) => ({ ...current, [selectedElement.id]: Number(e.target.value) }))} className="studio-range" />
+                        <span className="studio-range-value">{Math.min(1, elementStrengths[selectedElement.id] ?? 1).toFixed(2)}</span>
                       </label>
                       <label className="studio-check-row"><input type="checkbox" checked={Boolean(elementApplyAll[selectedElement.id])} onChange={(e) => setElementApplyAll((current) => ({ ...current, [selectedElement.id]: e.target.checked }))} /><span>Keep this Element active across all Factory scenes</span></label>
                     </div>
@@ -1642,7 +1844,11 @@ export default function Home() {
                   <Control label="Continuity"><select className="studio-inspector-control" value={continuityMode} onChange={(e) => setContinuityMode(e.target.value as ContinuityMode)}><option value="strict">Strict · identity + image</option><option value="balanced">Balanced · identity</option><option value="off">Off</option></select></Control>
                   <Control label="Realism"><select className="studio-inspector-control" value={realismProfile} onChange={(e) => setRealismProfile(e.target.value as RealismProfile)}><option value="real_skin">Real Skin · recommended</option><option value="identity_max">Identity Max · use Character Element</option><option value="standard">Standard · faster</option></select></Control>
                   <div className="studio-advanced-card text-[10px] leading-5 text-[var(--text-muted)]">
-                    {realismProfile === "standard" ? "Standard keeps the normal production render without the extra detail pass." : realismProfile === "identity_max" ? "Identity Max layers the Real Skin detail pass on top of your reusable Character Element. Use a sharp real photo as the Element's primary reference for the strongest face lock." : "Real Skin adds the official tiled LTX 2.5 Refine Details pass to final 1080p/4K renders. Preview stays fast."}
+                    {realismProfile === "standard"
+                      ? "Standard keeps the normal production render without the extra detail pass."
+                      : realismProfile === "identity_max"
+                        ? "Identity Max requires an identity-mode Character Element so the base generation starts from a real face reference, then applies the tiled Refine Details texture pass on final 1080p/4K renders."
+                        : "Real Skin adds the tiled LTX 2.5 Refine Details pass on final 1080p/4K renders. For the most realistic recurring face, add a sharp real Character Element or switch to Identity Max."}
                   </div>
                 </div>
 

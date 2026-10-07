@@ -1582,3 +1582,231 @@ select {
     display: none;
   }
 }
+
+/* Account login + account-owned chat history */
+.cinema-login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background:
+    radial-gradient(circle at 18% 14%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 34%),
+    radial-gradient(circle at 82% 78%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 30%),
+    var(--page-bg);
+}
+
+.cinema-login-card {
+  width: min(100%, 460px);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 28px;
+  background: color-mix(in srgb, var(--panel-bg) 94%, transparent);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(18px);
+}
+
+.cinema-login-card-loading {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-secondary);
+}
+
+.cinema-login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 34px;
+}
+
+.cinema-login-brand > div:last-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cinema-login-brand strong {
+  font-size: 14px;
+  color: var(--text-strong);
+}
+
+.cinema-login-brand span {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.cinema-login-copy h1 {
+  margin: 8px 0 8px;
+  font-size: clamp(26px, 5vw, 36px);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+  color: var(--text-strong);
+}
+
+.cinema-login-copy p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
+.cinema-login-kicker {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.cinema-login-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.cinema-login-form label {
+  display: grid;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.cinema-login-form input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+  background: var(--input-bg, var(--panel-bg));
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.cinema-login-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.cinema-login-form > button[type="submit"] {
+  min-height: 46px;
+  border: 0;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--text-strong);
+  color: var(--page-bg);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.cinema-login-form > button[type="submit"]:disabled,
+.cinema-login-back:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cinema-login-back {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cinema-demo-otp {
+  display: grid;
+  gap: 4px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.cinema-demo-otp span,
+.cinema-demo-otp small {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.cinema-demo-otp strong {
+  font-size: 24px;
+  letter-spacing: 0.16em;
+  color: var(--text-strong);
+}
+
+.cinema-login-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.26);
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.cinema-login-footnote {
+  margin-top: 20px;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.studio-account-pill {
+  max-width: 250px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-bg);
+}
+
+.studio-account-pill > span {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.studio-account-pill > button {
+  min-height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.studio-chat-history-empty {
+  padding: 10px 9px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .cinema-login-page { padding: 18px; }
+  .cinema-login-card { padding: 22px; border-radius: 20px; }
+  .studio-account-pill > span { display: none; }
+}

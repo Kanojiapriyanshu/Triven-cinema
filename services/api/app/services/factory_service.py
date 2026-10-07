@@ -123,6 +123,11 @@ def run_factory_generation(
         raise ValueError(str(exc)) from exc
     if resolved_element_bindings and request.provider != "modal":
         raise ValueError("Reusable Elements currently require the Modal LTX-2.5 provider.")
+    if request.realism_profile == "identity_max" and not any(
+        item.type == "character" and item.reference_mode == "identity"
+        for item in resolved_element_bindings
+    ):
+        raise ValueError("Identity Max requires an identity-mode Character Element with a real reference image.")
 
     if request.target_duration_seconds > settings.max_factory_duration_seconds:
         raise ValueError(

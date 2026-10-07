@@ -236,10 +236,8 @@ def build_command(
 # rendering/texture language only. The official tiled workflow warns against
 # subject-specific prompts because every tile sees the prompt independently.
 REALISM_DETAIL_PROMPT = (
-    "native high-resolution photographic capture, natural human skin microtexture where skin is visible, "
-    "fine pores and vellus hair, crisp eyelashes and hair strands, realistic fabric fibers, subtle tonal variation, "
-    "clean edges, sharp photographic detail, natural grain, true-to-life texture; preserve identity, composition, "
-    "lighting, color, pose, camera geometry and motion exactly"
+    "sharp photographic detail, crisp natural texture, fine surface detail, clean edges, "
+    "natural film grain, high resolution footage, subtle tonal variation, true-to-life material response"
 )
 REFINE_TILE_HEIGHT = 576
 REFINE_TILE_WIDTH = 1024

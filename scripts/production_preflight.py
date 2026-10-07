@@ -140,6 +140,16 @@ def main() -> int:
     else:
         warn("CORS_ORIGINS is set; same-origin Hostinger deployment normally does not need CORS")
 
+    if env.get("AUTH_ENABLED", "true").lower() in {"true", "1", "yes"}:
+        if env.get("TRIVEN_SECRET_KEY"):
+            ok("TRIVEN_SECRET_KEY configured for signed login sessions")
+        else:
+            fail("TRIVEN_SECRET_KEY is required when AUTH_ENABLED=true in production")
+        if env.get("DEMO_AUTH_SHOW_OTP", "true").lower() in {"true", "1", "yes"}:
+            warn("DEMO_AUTH_SHOW_OTP=true exposes the OTP in the browser; keep this only for the devansh.info demo")
+    else:
+        warn("AUTH_ENABLED=false leaves Studio APIs without the login gate")
+
     if env.get("VIDEO_PROVIDER") == "modal":
         ok("VIDEO_PROVIDER=modal")
     else:

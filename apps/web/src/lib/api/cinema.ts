@@ -23,12 +23,47 @@ import type {
 } from "@/lib/types/generation";
 
 // Production is same-origin through host Nginx. Empty is intentional.
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+// Browser requests always stay same-origin. Next.js rewrites /api and /media to FastAPI.
+// This is required for the HttpOnly auth cookie to work reliably in local development
+// (localhost and 127.0.0.1 are different cookie sites).
+export const API_URL = "";
 
 const WORKSPACE_HEADER = "X-Triven-Workspace";
 const WORKSPACE_STORAGE_KEY = "triven_workspace_token";
 let workspaceBootstrapPromise: Promise<void> | null = null;
 let workspaceBootstrapped = false;
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  workspace_id: string;
+}
+
+export interface AuthMeResponse {
+  authenticated: boolean;
+  user: AuthUser | null;
+}
+
+export interface DemoOtpResponse {
+  challenge_id: string;
+  expires_in_seconds: number;
+  demo_otp: string | null;
+  demo_mode: boolean;
+}
+
+export interface ServerChatSession {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  workspace: Record<string, unknown>;
+}
+
+export interface ServerChatListResponse {
+  chats: ServerChatSession[];
+  count: number;
+  max_saved: number;
+}
 
 function readWorkspaceToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -99,6 +134,82 @@ async function apiJson<T>(path: string, init?: RequestInit, fallback = "Request 
   storeWorkspaceToken(response);
   if (!response.ok) throw new Error(await readApiError(response, fallback));
   return response.json();
+}
+
+
+async function publicJson<T>(path: string, init?: RequestInit, fallback = "Request failed."): Promise<T> {
+  // Forward an existing signed anonymous-workspace token during login so the
+  // first account can adopt Elements/history created before authentication.
+  const workspaceToken = readWorkspaceToken();
+  const response = await fetch(`${API_URL}${path}`, {
+    cache: "no-store",
+    credentials: "include",
+    ...init,
+    headers: {
+      ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+      ...(workspaceToken ? { [WORKSPACE_HEADER]: workspaceToken } : {}),
+      ...(init?.headers || {}),
+    },
+  });
+  storeWorkspaceToken(response);
+  if (!response.ok) throw new Error(await readApiError(response, fallback));
+  return response.json();
+}
+
+export async function getAuthMe(): Promise<AuthMeResponse> {
+  return publicJson("/api/v1/auth/me", undefined, "Unable to read login session.");
+}
+
+export async function requestLoginOtp(email: string): Promise<DemoOtpResponse> {
+  return publicJson(
+    "/api/v1/auth/otp/request",
+    { method: "POST", body: JSON.stringify({ email }) },
+    "Unable to create login code."
+  );
+}
+
+export async function verifyLoginOtp(email: string, otp: string): Promise<AuthMeResponse> {
+  const result = await publicJson<AuthMeResponse>(
+    "/api/v1/auth/otp/verify",
+    { method: "POST", body: JSON.stringify({ email, otp }) },
+    "Unable to verify login code."
+  );
+  workspaceBootstrapped = false;
+  return result;
+}
+
+export async function logoutCinema(): Promise<void> {
+  await publicJson<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }, "Unable to sign out.");
+  if (typeof window !== "undefined") window.sessionStorage.removeItem(WORKSPACE_STORAGE_KEY);
+  workspaceBootstrapped = false;
+}
+
+export async function listChatHistory(): Promise<ServerChatListResponse> {
+  return apiJson("/api/v1/chats", undefined, "Unable to load previous chats.");
+}
+
+export async function saveChatHistoryItem(payload: ServerChatSession): Promise<ServerChatSession> {
+  return apiJson(
+    `/api/v1/chats/${encodeURIComponent(payload.id)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        title: payload.title,
+        created_at: payload.created_at,
+        updated_at: payload.updated_at,
+        workspace: payload.workspace,
+      }),
+    },
+    "Unable to save chat."
+  );
+}
+
+export async function deleteChatHistoryItem(chatId: string): Promise<void> {
+  await apiJson(
+    `/api/v1/chats/${encodeURIComponent(chatId)}`,
+    { method: "DELETE" },
+    "Unable to delete chat."
+  );
 }
 
 export async function listElements(includeArchived = false): Promise<ElementListResponse> {

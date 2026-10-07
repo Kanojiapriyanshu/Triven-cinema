@@ -10,6 +10,9 @@ STORAGE = ROOT / "storage"
 JOBS_DB = STORAGE / "jobs" / "jobs.sqlite3"
 BILLING_DB = STORAGE / "billing" / "billing.sqlite3"
 INTEGRATIONS_DB = STORAGE / "integrations" / "integrations.sqlite3"
+AUTH_DB = STORAGE / "auth" / "auth.sqlite3"
+CHATS_DB = STORAGE / "chats" / "chats.sqlite3"
+ELEMENTS_DB = STORAGE / "elements" / "elements.sqlite3"
 METRICS = STORAGE / "metrics"
 BACKUPS = STORAGE / "backups"
 ENV_PATH = ROOT / ".env"
@@ -49,6 +52,9 @@ def main() -> int:
         (JOBS_DB, "jobs.sqlite3"),
         (BILLING_DB, "billing.sqlite3"),
         (INTEGRATIONS_DB, "integrations.sqlite3"),
+        (AUTH_DB, "auth.sqlite3"),
+        (CHATS_DB, "chats.sqlite3"),
+        (ELEMENTS_DB, "elements.sqlite3"),
     ]
     for source, name in databases:
         if not source.exists():

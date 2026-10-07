@@ -6,11 +6,13 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routes import billing, elements, factory, generations, health, youtube
+from app.api.routes import auth, billing, chats, elements, factory, generations, health, youtube
 from app.core.config import settings
+from app.services.auth_service import auth_user_from_request, authenticated_workspace_id, initialize_auth_store
 from app.services.billing_service import initialize_billing_store
+from app.services.chat_service import initialize_chat_store
 from app.services.element_service import initialize_element_store
 from app.services.identity_service import (
     WORKSPACE_HEADER,
@@ -39,6 +41,8 @@ for directory in (STORAGE_DIR, GENERATED_DIR, LOGS_DIR):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_job_store()
+    initialize_auth_store()
+    initialize_chat_store()
     initialize_element_store()
     initialize_billing_store()
     initialize_youtube_store()
@@ -70,7 +74,7 @@ if settings.cors_origin_list:
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "X-Request-ID", WORKSPACE_HEADER],
         expose_headers=[WORKSPACE_HEADER],
     )
@@ -80,6 +84,20 @@ if settings.cors_origin_list:
 async def request_context(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
     started = time.perf_counter()
+
+    if settings.auth_enabled and request.method != "OPTIONS" and request.url.path.startswith("/api/v1/"):
+        public_prefixes = (
+            "/api/v1/auth/",
+            "/api/v1/health",
+            "/api/v1/billing/webhook",
+            "/api/v1/youtube/callback",
+            "/api/v1/elements/assets/",
+        )
+        if not request.url.path.startswith(public_prefixes) and auth_user_from_request(request) is None:
+            response = JSONResponse(status_code=401, content={"detail": "Authentication required."})
+            response.headers["X-Request-ID"] = request_id
+            response.headers["Cache-Control"] = "no-store"
+            return response
     try:
         response = await call_next(request)
     except Exception:
@@ -120,7 +138,11 @@ def bootstrap_workspace(request: Request, response: Response) -> dict:
     HttpOnly; development may also receive a signed response header for split-origin
     localhost testing.
     """
-    workspace_id = ensure_workspace(request, response)
+    workspace_id = ensure_workspace(
+        request,
+        response,
+        preferred_workspace_id=authenticated_workspace_id(request),
+    )
     return {"status": "ready", "workspace_id": workspace_id}
 
 
@@ -143,6 +165,8 @@ async def generated_media(filename: str, request: Request):
     return FileResponse(path, media_type=media_type, filename=None)
 
 app.include_router(health.router, prefix="/api/v1/health", tags=["Health"])
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
+app.include_router(chats.router, prefix="/api/v1/chats", tags=["Chats"])
 app.include_router(generations.router, prefix="/api/v1/generations", tags=["Generations"])
 app.include_router(factory.router, prefix="/api/v1/factory", tags=["Factory"])
 app.include_router(elements.router, prefix="/api/v1/elements", tags=["Elements"])

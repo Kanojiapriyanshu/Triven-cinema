@@ -244,7 +244,11 @@ def generate_video(
                 else ("DFR production · single-pass scene" if mode == "dfr" else "Distilled preview")
             )
             + f" · {('diffusion' if mode == 'dfr' else decoder)} decoder · {GPU_TYPE}"
-            + (" · Refine Details IC-LoRA · tiled texture pass · source audio preserved" if apply_detail_refiner else "")
+            + (
+                " · Refine Details IC-LoRA · tiled texture pass · source audio preserved"
+                if apply_detail_refiner
+                else ""
+            )
             + (" · Identity Max" if realism == "identity_max" else (" · Real Skin" if realism == "real_skin" else ""))
             + (" · first-frame continuity" if reference_image_bytes else "")
         ),

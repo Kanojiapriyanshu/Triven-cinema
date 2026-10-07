@@ -97,8 +97,17 @@ def workspace_id_from_request(request: Request) -> str | None:
     return None
 
 
-def ensure_workspace(request: Request, response: Response | None = None) -> str:
+def ensure_workspace(
+    request: Request,
+    response: Response | None = None,
+    *,
+    preferred_workspace_id: str | None = None,
+) -> str:
     workspace_id = workspace_id_from_request(request)
+    if preferred_workspace_id is not None:
+        clean_preferred = preferred_workspace_id.strip().lower()
+        if len(clean_preferred) == 32 and all(ch in "0123456789abcdef" for ch in clean_preferred):
+            workspace_id = clean_preferred
     if workspace_id is None:
         workspace_id = uuid.uuid4().hex
 

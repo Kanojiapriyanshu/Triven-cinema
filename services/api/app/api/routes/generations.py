@@ -190,6 +190,12 @@ def _generate_video_impl(
         element_sheet_path = Path(tempfile.gettempdir()) / f"triven-element-sheet-{uuid.uuid4().hex}.png"
         build_reference_sheet(active_elements, element_sheet_path)
 
+    character_detail_element = next(
+        (item for item in active_elements if item.type == "character" and item.reference_mode == "identity"),
+        None,
+    )
+    if request.realism_profile == "identity_max" and character_detail_element is None:
+        raise ValueError("Identity Max requires an identity-mode Character Element with a real reference image.")
     if progress:
         progress(
             "rendering",
