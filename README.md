@@ -30,7 +30,7 @@ Triven Cinema is an AI video factory: prompt input, continuity-locked storyboard
 - Final MP4 preview and download.
 - Render timing metrics and optional GPU cost estimates.
 - Seed, preview-decoder, prompt-enhancement and production realism controls in the UI.
-- Creator-grade talking-head preset with stage-2 Character IC-LoRA lock, prompt-authoritative wardrobe, early/mid/late artifact QC, and 30s 1080p creator-shot support.
+- Creator-grade talking-head preset with stage-2 Character IC-LoRA lock, prompt-authoritative wardrobe, early/mid/late artifact QC, user-selected final runtime, and up to 30s per 1080p creator scene.
 - Semantic Character reference roles (face/full body/profile/costume) and identity-only reference-sheet composition when the prompt requests different clothing.
 - Modal GPU benchmark script and required-aspect-ratio smoke test.
 - Docker deployment baseline for the Next.js/FastAPI application layer.

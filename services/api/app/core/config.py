@@ -45,9 +45,9 @@ class Settings(BaseSettings):
     default_scene_duration_seconds: float = 20.0
 
     # LTX-2.5's native duration head is designed around clips up to 20 seconds.
-    # Factory therefore treats 15-20s as the normal single-pass scene range.
-    # 1080p can optionally expose a 30s DFR single-pass experiment on B200; it is
-    # explicit num-frames generation, not application-level chunking/stitching.
+    # Factory keeps 15-20s as the conservative range, while the creator profile
+    # may expose user-selected 1080p scene lengths through the 30s B200/DFR ceiling.
+    # Final runtime is independent and may span multiple continuity-locked scenes.
     ltx_native_chunk_seconds: float = 20.0
     max_preview_scene_seconds: float = 20.0
     max_1080p_scene_seconds: float = 30.0

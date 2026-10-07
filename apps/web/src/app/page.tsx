@@ -282,11 +282,13 @@ const DURATION_OPTIONS: Record<RenderQuality, number[]> = {
 
 const FACTORY_SCENE_OPTIONS: Record<RenderQuality, number[]> = {
   preview: [15, 20],
-  "1080p": [15, 20, 30],
+  "1080p": [15, 20, 25, 30],
   "4k": [15],
 };
 
-const FACTORY_TARGETS = [30, 60, 120, 180, 300];
+// Final runtime is a user choice. The creator-grade preset must never overwrite it.
+// Longer runtimes are assembled from continuity-locked scenes by Factory mode.
+const FACTORY_TARGETS = [15, 20, 25, 30, 45, 60, 90, 120, 180, 300];
 
 const CAMERA_MOVES: Array<{ value: CameraMove; label: string }> = [
   { value: "auto", label: "Auto" },
@@ -536,7 +538,7 @@ export default function Home() {
   const [notice, setNotice] = useState("");
 
   const durationOptions = DURATION_OPTIONS[quality];
-  const factoryDurationOptions = FACTORY_SCENE_OPTIONS[quality];
+  const factoryDurationOptions = FACTORY_SCENE_OPTIONS[quality].filter((value) => value <= factoryTargetSeconds);
   const isBusy = planning || directGenerating || factoryGenerating || generatingScene !== null || creatingFinal;
   const renderedSceneCount = Object.keys(renderedVideos).length;
   const allScenesRendered = !!result && result.scenes.length > 0 && result.scenes.every((scene) => Boolean(renderedVideos[scene.id]));
@@ -927,9 +929,26 @@ export default function Home() {
   function handleQualityChange(nextQuality: RenderQuality) {
     setQuality(nextQuality);
     const options = DURATION_OPTIONS[nextQuality];
-    const factoryOptions = FACTORY_SCENE_OPTIONS[nextQuality];
+    const factoryOptions = FACTORY_SCENE_OPTIONS[nextQuality].filter((value) => value <= factoryTargetSeconds);
     setDurationSeconds((current) => options.includes(current) ? current : options[Math.min(2, options.length - 1)]);
-    setFactorySceneSeconds((current) => factoryOptions.includes(current) ? current : factoryOptions[factoryOptions.length - 1]);
+    setFactorySceneSeconds((current) => {
+      if (factoryOptions.includes(current)) return current;
+      return factoryOptions[factoryOptions.length - 1] ?? Math.min(factoryTargetSeconds, 15);
+    });
+    invalidateRenderedMedia();
+  }
+
+  function handleFactoryTargetChange(nextTarget: number) {
+    const maximum = capabilities?.max_factory_duration_seconds ?? 300;
+    const next = Math.max(15, Math.min(maximum, Number(nextTarget) || 15));
+    setFactoryTargetSeconds(next);
+    setFactorySceneSeconds((current) => Math.min(current, next));
+    invalidateRenderedMedia();
+  }
+
+  function handleFactorySceneDurationChange(nextSceneSeconds: number) {
+    const next = Math.max(15, Math.min(factoryTargetSeconds, Number(nextSceneSeconds) || 15));
+    setFactorySceneSeconds(next);
     invalidateRenderedMedia();
   }
 
@@ -1032,12 +1051,13 @@ export default function Home() {
 
   function applyCreatorGradePreset() {
     const activeCharacters = referencedElements.filter((element) => element.type === "character");
+    // Creator-grade is a quality/consistency preset, not a duration preset.
+    // Preserve the runtime and scene length the user selected.
     setQuality("1080p");
     setDecoder("diffusion");
     setContinuityMode("strict");
-    setFactoryTargetSeconds((current) => Math.max(30, current));
-    setFactorySceneSeconds(30);
     setEnhancePrompt(false);
+    invalidateRenderedMedia();
     if (activeCharacters.length > 1) {
       setRealismProfile("real_skin");
       setError(
@@ -1067,10 +1087,10 @@ export default function Home() {
         activeCharacters.forEach((element) => { next[element.id] = true; });
         return next;
       });
-      setNotice("Creator-grade preset applied: 1080p Diffusion final, Identity Max, strict continuity, stage-2 Character lock and prompt-authoritative wardrobe.");
+      setNotice(`Creator-grade preset applied for your selected ${factoryTargetSeconds}s runtime: 1080p Diffusion final, Identity Max, strict continuity, stage-2 Character lock and prompt-authoritative wardrobe.`);
     } else {
       setRealismProfile("real_skin");
-      setNotice("Creator-grade render settings applied. Add a Character Element to enable Identity Max face locking.");
+      setNotice(`Creator-grade render settings applied for your selected ${factoryTargetSeconds}s runtime. Add a Character Element to enable Identity Max face locking.`);
     }
   }
 
@@ -1776,8 +1796,8 @@ export default function Home() {
                     <option value="preview">Preview</option><option value="1080p">1080p</option><option value="4k">4K</option>
                   </select>
                   {mode === "factory" ? (
-                    <select className="studio-toolbar-select" value={factorySceneSeconds} onChange={(e) => setFactorySceneSeconds(Number(e.target.value))}>
-                      {factoryDurationOptions.map((value) => <option key={value} value={value}>{value === 30 ? "30s experimental" : `${value}s scene`}</option>)}
+                    <select className="studio-toolbar-select" value={factorySceneSeconds} onChange={(e) => handleFactorySceneDurationChange(Number(e.target.value))}>
+                      {factoryDurationOptions.map((value) => <option key={value} value={value}>{value}s scene</option>)}
                     </select>
                   ) : (
                     <select className="studio-toolbar-select" value={durationSeconds} onChange={(e) => setDurationSeconds(Number(e.target.value))}>
@@ -1931,14 +1951,15 @@ export default function Home() {
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="text-xs font-semibold text-[var(--text)]">Creator-grade talking head</div>
-                          <div className="mt-1 text-[10px] leading-5 text-[var(--text-muted)]">1080p Diffusion final · 30s continuous shot · strict visual QC · stage-2 Character lock · prompt-authoritative wardrobe.</div>
+                          <div className="mt-1 text-[10px] leading-5 text-[var(--text-muted)]">1080p Diffusion final · user-selected runtime · strict visual QC · stage-2 Character lock · prompt-authoritative wardrobe. The preset never changes your duration.</div>
                         </div>
                         <button type="button" onClick={applyCreatorGradePreset} className="studio-small-action whitespace-nowrap">Apply preset</button>
                       </div>
                     </div>
                   )}
                   {mode === "factory" ? (
-                    <Control label="Final runtime"><select className="studio-inspector-control" value={factoryTargetSeconds} onChange={(e) => setFactoryTargetSeconds(Number(e.target.value))}>{FACTORY_TARGETS.map((value) => <option key={value} value={value}>{value < 60 ? `${value} seconds` : `${value / 60} minute${value === 60 ? "" : "s"}`}</option>)}</select></Control>
+                    <Control label="Final runtime"><select className="studio-inspector-control" value={factoryTargetSeconds} onChange={(e) => handleFactoryTargetChange(Number(e.target.value))}>{FACTORY_TARGETS.map((value) => <option key={value} value={value}>{value < 60 ? `${value} seconds` : `${value / 60} minute${value === 60 ? "" : "s"}`}</option>)}</select></Control>
+                    <div className="-mt-1 text-[10px] leading-5 text-[var(--text-muted)]">Runtime is always your choice. Up to 30s can remain a single 1080p creator shot; longer videos are built from continuity-locked scenes.</div>
                   ) : mode === "storyboard" ? (
                     <Control label="Storyboard scenes"><select className="studio-inspector-control" value={sceneCount} onChange={(e) => setSceneCount(Number(e.target.value))}>{[2,3,4,6,8,10,12,16,20].map((value) => <option key={value} value={value}>{value} scenes</option>)}</select></Control>
                   ) : null}

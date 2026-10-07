@@ -23,7 +23,7 @@ The UI no longer caps every scene at five seconds.
 - Source preview: up to 10 seconds per scene by default.
 - 1080p delivery: up to 30 seconds per scene.
 - 4K delivery: up to 15 seconds per scene.
-- Factory: up to 300 seconds total by default, composed from continuity-locked scenes.
+- Factory: user-selectable 15-300 seconds total by default, composed from continuity-locked scenes. The creator-grade preset never overwrites this selection.
 
 For long Modal scenes, Triven uses the upstream LTX-2.5 DistilledPipeline temporal-window mode with carry/blend overlap. The default window is 241 pixel frames (about 10 seconds at 24 fps) with a 25-frame carry/blend. This keeps a 15s/30s scene inside one LTX pipeline invocation instead of launching unrelated 5s generations.
 

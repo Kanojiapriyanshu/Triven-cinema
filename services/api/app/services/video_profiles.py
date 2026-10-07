@@ -49,11 +49,12 @@ def validate_scene_duration(*, quality: str, duration_seconds: float) -> None:
 
 
 def validate_factory_scene_duration(*, quality: str, duration_seconds: float) -> None:
-    """Validate Factory scene length without silently shortening the user's shot.
+    """Validate the user-selected Factory scene length.
 
-    Normal Factory shots are true 15-20 second single-pass LTX generations. 1080p
-    may additionally expose a 30 second B200/DFR experiment. 4K remains capped at
-    the validated 15 second profile.
+    1080p creator shots may use any duration from the Factory minimum through the
+    configured extended single-pass ceiling (30s by default).  This keeps runtime
+    user-controlled instead of treating 30 seconds as a special hard-coded mode.
+    4K remains capped at its validated scene ceiling.
     """
     duration = float(duration_seconds)
     minimum = max(1.0, float(settings.factory_min_scene_seconds))
@@ -68,25 +69,23 @@ def validate_factory_scene_duration(*, quality: str, duration_seconds: float) ->
             raise ValueError(f"4K Factory scenes are limited to {maximum:g}s in the validated profile.")
         return
 
+    if quality == "1080p" and settings.factory_enable_30s_1080p_single_pass:
+        maximum = min(
+            max_scene_duration_seconds("1080p"),
+            float(settings.factory_experimental_1080p_scene_seconds),
+        )
+        if duration <= maximum + 1e-6:
+            validate_scene_duration(quality=quality, duration_seconds=duration)
+            return
+        raise ValueError(
+            f"1080p Factory scenes can be selected from {minimum:g}s up to {maximum:g}s. "
+            "Use a longer Final runtime to let Factory assemble multiple continuity-locked scenes."
+        )
+
     if duration <= standard_max + 1e-6:
         validate_scene_duration(quality=quality, duration_seconds=duration)
         return
 
-    experimental = float(settings.factory_experimental_1080p_scene_seconds)
-    allow_experimental = (
-        quality == "1080p"
-        and settings.factory_enable_30s_1080p_single_pass
-        and abs(duration - experimental) <= 1e-6
-    )
-    if allow_experimental:
-        validate_scene_duration(quality=quality, duration_seconds=duration)
-        return
-
-    if quality == "1080p" and settings.factory_enable_30s_1080p_single_pass:
-        raise ValueError(
-            f"1080p Factory scenes use {minimum:g}-{standard_max:g}s for the validated single-pass profile, "
-            f"or exactly {experimental:g}s for the experimental B200 single-pass profile."
-        )
     raise ValueError(
         f"Factory scenes use {minimum:g}-{standard_max:g}s in the validated single-pass profile."
     )

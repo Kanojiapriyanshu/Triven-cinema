@@ -63,7 +63,9 @@ class FactoryProfileTests(unittest.TestCase):
         validate_factory_scene_duration(quality="1080p", duration_seconds=15)
         validate_factory_scene_duration(quality="1080p", duration_seconds=20)
 
-    def test_factory_allows_experimental_thirty_second_1080p_single_pass(self):
+    def test_factory_allows_user_selected_extended_1080p_scene_lengths(self):
+        validate_factory_scene_duration(quality="1080p", duration_seconds=21)
+        validate_factory_scene_duration(quality="1080p", duration_seconds=25)
         validate_factory_scene_duration(quality="1080p", duration_seconds=30)
 
     def test_factory_keeps_4k_at_fifteen_seconds(self):

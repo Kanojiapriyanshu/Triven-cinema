@@ -39,7 +39,7 @@ The Scene inspector has a `Creator-grade talking head` preset. With a Character 
 
 - 1080p final quality
 - diffusion final decoder
-- 30-second continuous Factory scene
+- preserves the user-selected Factory runtime and scene length
 - strict continuity/QC
 - Identity Max
 - Character identity mode at strength 1.0
@@ -47,7 +47,7 @@ The Scene inspector has a `Creator-grade talking head` preset. With a Character 
 - prompt-authoritative wardrobe
 - AI Director off so the user's detailed creator prompt is not creatively rewritten
 
-Without a Character Element it applies the same production settings but stays on Real Skin until a reusable Character is added. For a solo presenter, the preset refuses to activate Identity Max when multiple Character Elements are referenced at once; competing identity sheets are a common cause of face blending/drift.
+The preset never overwrites duration. Users can choose short creator clips or longer Factory runtimes, while 1080p supports up to 30 seconds per individual scene. Without a Character Element it applies the same production settings but stays on Real Skin until a reusable Character is added. For a solo presenter, the preset refuses to activate Identity Max when multiple Character Elements are referenced at once; competing identity sheets are a common cause of face blending/drift.
 
 ## Recommended Character references
 
