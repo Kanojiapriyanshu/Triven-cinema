@@ -16,9 +16,13 @@ class ContinuityQCResult(BaseModel):
     passed: bool = True
     duplicate_detected: bool = False
     identity_drift_detected: bool = False
+    artifact_detected: bool = False
+    wardrobe_mismatch_detected: bool = False
     observed_max_counts: dict[str, int] = Field(default_factory=dict)
     violations: list[str] = Field(default_factory=list)
     identity_violations: list[str] = Field(default_factory=list)
+    artifact_violations: list[str] = Field(default_factory=list)
+    wardrobe_violations: list[str] = Field(default_factory=list)
     note: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     skipped: bool = False
@@ -140,20 +144,27 @@ QC RULES:
 - A recurring subject must not appear as twins, mirrored physical duplicates, extra bodies, extra heads/faces, split bodies, fused people, or ghost clones.
 - Do not count a normal shadow or a clearly readable reflection as another physical subject.
 - For an expected count of 1, two simultaneously visible physical instances is a failure.
-- If canonical Element references exist, recurring named characters/props/locations must match those references first: recognizable facial identity, age band, skin tone, hair, costume palette, body proportions, object design, or location landmarks as applicable.
-- If a previous approved reference exists, recurring named characters must preserve the same recognizable facial identity, age band, skin tone, hair, costume palette, body proportions, and signature props unless the scene explicitly calls for a justified change.
-- A face replacement, unexplained costume/body redesign, one named character turning into another, or strong identity drift is a failure.
+- If canonical Element references exist, recurring named characters/props/locations must match those references first for identity: recognizable face geometry, age band, skin tone, hair/hairline, body proportions, object design, or location landmarks as applicable.
+- IMPORTANT wardrobe rule: when SCENE INTENT contains WARDROBE AUTHORITY or says scene wardrobe overrides the identity reference, the canonical Element's clothes are NOT authoritative. Judge the generated clothing against the scene's requested garment, colors, pattern, material and construction instead. Reject hybrid/blended reference clothing.
+- Otherwise, if a previous approved reference exists, recurring named characters should preserve the same wardrobe state unless the scene explicitly calls for a justified change.
+- A face replacement, unexplained body redesign, one named character turning into another, or strong identity drift is a failure.
+- Artifact failure examples: facial melting, eye/teeth deformation, extra/fused fingers or limbs, warped hands, clothing seams/patterns morphing, random straps/buttons/zippers, object duplication, floating geometry, unstable desk/microphone/set geometry, or unrequested glyph/text noise.
+- Inspect the EARLIEST generated sample especially carefully. A bad first seconds phase, frozen reference hold, identity redesign, or abrupt wardrobe mutation is a failure even if later samples recover.
 - Ignore tiny unrelated background strangers unless they duplicate a locked recurring subject.
-- Be conservative about ordinary motion blur, pose changes, expression changes, lighting, and camera perspective. Only flag identity drift when it is visually meaningful.
+- Be conservative about ordinary motion blur, pose changes, expression changes, lighting, and camera perspective. Only flag meaningful identity or artifact failures.
 
 Return ONLY JSON with exactly this shape:
 {{
   "passed": true,
   "duplicate_detected": false,
   "identity_drift_detected": false,
+  "artifact_detected": false,
+  "wardrobe_mismatch_detected": false,
   "observed_max_counts": {{"ENTITY": 1}},
   "violations": [],
   "identity_violations": [],
+  "artifact_violations": [],
+  "wardrobe_violations": [],
   "note": "short reason",
   "confidence": 0.95,
   "skipped": false
@@ -165,7 +176,7 @@ Return ONLY JSON with exactly this shape:
             video_path,
             Path(tmp),
             prefix="continuity-qc",
-            positions=(0.20, 0.50, 0.80)[: max(1, min(3, settings.continuity_qc_max_frames))],
+            positions=(0.02, 0.18, 0.45, 0.72, 0.94)[: max(1, min(5, settings.continuity_qc_max_frames))],
         )
         if not frames:
             return _skipped("No QC frames could be extracted from the generated clip.")
@@ -199,8 +210,12 @@ Return ONLY JSON with exactly this shape:
     if (
         parsed.duplicate_detected
         or parsed.identity_drift_detected
+        or parsed.artifact_detected
+        or parsed.wardrobe_mismatch_detected
         or parsed.violations
         or parsed.identity_violations
+        or parsed.artifact_violations
+        or parsed.wardrobe_violations
     ):
         parsed.passed = False
     return parsed

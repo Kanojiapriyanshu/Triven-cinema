@@ -242,6 +242,7 @@ def compose_continuity_prompt(
     entity_locks: Iterable[EntityLock | dict] | None = None,
     visible_entity_counts: dict[str, int] | None = None,
     reference_frame_present: bool = False,
+    prompt_wardrobe_authoritative: bool = False,
     retry_level: int = 0,
     qc_feedback: str | None = None,
 ) -> str:
@@ -264,7 +265,8 @@ def compose_continuity_prompt(
     if reference_frame_present:
         blocks.append(
             "REFERENCE FRAME IS AUTHORITATIVE: recurring subjects are the one and only canonical physical instance. "
-            "Continue existing faces, bodies, wardrobe, props and geography. Describe only the next action/change. "
+            "Continue existing faces, bodies, props and geography. Preserve wardrobe state unless the current scene explicitly "
+            "specifies different clothing; when it does, the current scene wardrobe is authoritative. Describe only the next action/change. "
             "BEGIN MOTION IMMEDIATELY after the anchor frame with natural micro-motion; do not freeze or hold the "
             "opening for several seconds unless the user explicitly requests a still hold. "
             "DO NOT introduce, recreate, re-enter, spawn, mirror or clone them."
@@ -277,6 +279,11 @@ def compose_continuity_prompt(
     blocks.append(
         "HARD CONTINUITY: Never create duplicate copies. No split/fused person, identity swap, body morph, extra face/limb, or unexplained costume/age change."
     )
+    if prompt_wardrobe_authoritative:
+        blocks.append(
+            "WARDROBE OVERRIDE: preserve the recurring person's identity while obeying the CURRENT SCENE clothing description exactly. "
+            "Do not pull garments, colors, straps, buttons or patterns from an identity reference unless this scene asks for them."
+        )
 
     if retry_level > 0:
         feedback = compact_text(qc_feedback, 260)
@@ -288,6 +295,54 @@ def compose_continuity_prompt(
     blocks.extend([f"[{scene_label}]", prompt])
     return "\n\n".join(blocks)
 
+
+
+def compose_render_integrity_prompt(
+    scene_prompt: str,
+    *,
+    realism_profile: str = "standard",
+    prompt_wardrobe_authoritative: bool = False,
+    retry_level: int = 0,
+    qc_feedback: str | None = None,
+) -> str:
+    """Append non-creative render constraints that prevent common AI-video artifacts.
+
+    This is intentionally safe to use when AI prompt enhancement is OFF: it never
+    invents story, dialogue, wardrobe or scene content. It only tells the renderer
+    not to corrupt the user's already-authored visual requirements.
+    """
+    prompt = scene_prompt.strip()
+    marker = "[TRIVEN VISUAL INTEGRITY]"
+    if marker in prompt:
+        return prompt
+
+    blocks = [prompt, marker]
+    blocks.append(
+        "Preserve one coherent physical version of every subject and object from first frame to last. "
+        "No duplicate face/body, identity swap, facial melting, asymmetric eye drift, extra teeth, extra fingers or limbs, "
+        "fused hands, floating objects, warped straight edges, geometry popping, texture crawling, or unexplained prop duplication."
+    )
+    blocks.append(
+        "FABRIC / MATERIAL INTEGRITY: clothing must remain one physically plausible garment with stable seams, sleeves, neckline, "
+        "knit/weave, colors and pattern. Do not melt, splice, morph, add random straps/buttons/zippers, or blend two outfits together."
+    )
+    if prompt_wardrobe_authoritative:
+        blocks.append(
+            "WARDROBE AUTHORITY: any clothing described in this scene prompt overrides clothing visible in the identity reference. "
+            "Use the reference for the person's identity, not as a costume instruction. Reproduce the requested garment exactly and coherently."
+        )
+    if realism_profile in {"real_skin", "identity_max"}:
+        blocks.append(
+            "PHOTOREAL HUMAN INTEGRITY: retain natural skin microtexture, pores, fine hairs, subtle asymmetry and believable eye moisture; "
+            "avoid waxy smoothing, porcelain skin, beauty-filter sheen, CGI gloss, excessive sharpening or painted facial detail."
+        )
+    blocks.append(
+        "TEMPORAL INTEGRITY: visible motion starts naturally at the beginning; no frozen reference hold, sudden first-seconds redesign, "
+        "or progressive face/wardrobe mutation. Keep set geometry, desk/microphone placement and major background objects stable unless the scene asks them to move."
+    )
+    if retry_level > 0 and qc_feedback:
+        blocks.append("RENDER QC RETRY: Correct this previously observed issue: " + compact_text(qc_feedback, 300))
+    return "\n\n".join(block for block in blocks if block)
 
 def safe_continuity_id(value: str | None) -> str:
     raw = compact_text(value, 96) if value else ""
@@ -310,7 +365,8 @@ def local_character_bible(prompt: str) -> str:
         base = compact_text(prompt, 1400)
     return (
         "Immutable recurring-character identities. Freeze face geometry, apparent age, hairstyle, hair color, "
-        "eye color, skin/fur markings, body proportions, clothing design/colors, accessories and recurring props. "
+        "eye color, skin/fur markings and body proportions. Keep accessories/wardrobe stable unless a scene explicitly "
+        "specifies a change; an explicit scene wardrobe overrides earlier clothing while identity remains unchanged. "
         f"{base}"
     )[:2400]
 

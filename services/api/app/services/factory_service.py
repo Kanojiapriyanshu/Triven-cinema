@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.schemas.factory import FactoryGenerationRequest, FactoryGenerationResponse
 from app.schemas.generation import MediaInfo
 from app.services.audio_qc import evaluate_scene_audio
-from app.services.continuity_service import compose_continuity_prompt
+from app.services.continuity_service import compose_continuity_prompt, compose_render_integrity_prompt
 from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
 from app.services.element_service import (
@@ -74,6 +74,24 @@ def _factory_scene_durations(total_seconds: float, max_scene_seconds: float, min
 
     return [round(value, 3) for value in durations]
 
+
+
+def _wants_single_continuous_shot(prompt: str) -> bool:
+    text = " ".join((prompt or "").lower().split())
+    phrases = (
+        "one continuous shot",
+        "single continuous shot",
+        "one continuous static shot",
+        "single continuous static shot",
+        "filmed as one continuous",
+        "without cuts",
+        "no cuts",
+        "uncut shot",
+        "single take",
+        "one take",
+    )
+    return any(phrase in text for phrase in phrases)
+
 def _scene_seed(base_seed: int, scene_index: int, attempt: int = 0) -> int:
     """Return a deterministic but different seed for every scene/retry.
 
@@ -133,10 +151,20 @@ def run_factory_generation(
         raise ValueError(
             f"Factory jobs are limited to {settings.max_factory_duration_seconds}s on this deployment."
         )
-    # Respect the selected Factory shot length. Do not silently collapse a 15/20/30s
-    # request back to 5/10s. Final Modal/DFR shots are submitted as one LTX call;
-    # 30s is an explicit experimental 1080p B200 profile, not stitched sub-clips.
+    # Respect explicit single-take intent. A 30s prompt that says "one continuous
+    # shot" must not silently become two independently generated 15s clips merely
+    # because the generic Factory scene selector was left at 20s. That split is a
+    # major source of face/set discontinuity in creator videos.
     effective_scene_seconds = float(request.scene_duration_seconds)
+    if (
+        request.provider == "modal"
+        and request.quality == "1080p"
+        and request.target_duration_seconds <= settings.factory_experimental_1080p_scene_seconds + 1e-6
+        and request.target_duration_seconds > effective_scene_seconds + 1e-6
+        and _wants_single_continuous_shot(request.prompt)
+    ):
+        effective_scene_seconds = float(request.target_duration_seconds)
+
     validate_factory_scene_duration(
         quality=request.quality,
         duration_seconds=effective_scene_seconds,
@@ -196,6 +224,7 @@ def run_factory_generation(
     total_render = 0.0
     total_wall = 0.0
     total_chunks = 0
+    any_detail_refined = False
     gpu: str | None = None
     previous_frame: Path | None = None
     continuity_frames: list[Path] = []
@@ -222,14 +251,17 @@ def run_factory_generation(
 
             identity_elements = [item for item in active_elements if item.reference_mode == "identity"]
             start_frame_elements = [item for item in active_elements if item.reference_mode == "start_frame"]
+            character_identity_elements = [item for item in identity_elements if item.type == "character"]
+            prompt_wardrobe_authoritative = any(
+                item.wardrobe_policy == "prompt" for item in character_identity_elements
+            )
             use_ingredients = bool(identity_elements or len(active_elements) > 1)
             if use_ingredients and not settings.element_ingredients_enabled:
                 raise ValueError("Element identity conditioning is disabled on this deployment.")
             if use_ingredients and duration > settings.element_ingredients_max_scene_seconds + 1e-6:
                 raise ValueError(
                     f"Element identity-conditioned Factory scenes are currently limited to "
-                    f"{settings.element_ingredients_max_scene_seconds:g}s. Use 15/20s scenes; "
-                    "30s remains available for prompt-only or exact single start-frame shots."
+                    f"{settings.element_ingredients_max_scene_seconds:g}s on this deployment."
                 )
 
             element_sheet_path: Path | None = None
@@ -262,12 +294,10 @@ def run_factory_generation(
             accepted_path: Path | None = None
             last_qc_note = ""
             attempts = max(0, int(request.continuity_max_retries)) + 1
-            # Prompt-only Factory mode must not rewrite the user's prompt. Strict
-            # continuity still benefits from first-frame conditioning; Gemini-backed
-            # QC becomes advisory if the service is unavailable.
+            # Prompt-only Factory mode still receives strict *inspection*. QC never
+            # rewrites the user's creative prompt; it only rejects/regenerates broken
+            # identity, wardrobe or artifact frames.
             effective_qc_mode = request.continuity_qc_mode
-            if not request.enhance_prompt and effective_qc_mode == "strict":
-                effective_qc_mode = "auto"
 
             for attempt in range(attempts):
                 locked_prompt = scene.prompt
@@ -281,9 +311,17 @@ def run_factory_generation(
                         entity_locks=plan.entity_locks,
                         visible_entity_counts=scene.visible_entity_counts,
                         reference_frame_present=(scene_reference_frame is not None),
+                        prompt_wardrobe_authoritative=prompt_wardrobe_authoritative,
                         retry_level=attempt,
                         qc_feedback=last_qc_note,
                     )
+                locked_prompt = compose_render_integrity_prompt(
+                    locked_prompt,
+                    realism_profile=request.realism_profile,
+                    prompt_wardrobe_authoritative=prompt_wardrobe_authoritative,
+                    retry_level=attempt,
+                    qc_feedback=last_qc_note,
+                )
                 locked_prompt = _audio_prompt(locked_prompt, request.audio_direction)
                 if active_elements:
                     locked_prompt = compile_element_prompt(locked_prompt, active_elements)
@@ -306,7 +344,11 @@ def run_factory_generation(
                     enhance_prompt=False,
                     render_mode=render_mode,
                     reference_image_path=str(scene_reference_frame) if scene_reference_frame is not None else None,
-                    reference_strength=request.continuity_strength,
+                    reference_strength=(
+                        1.0
+                        if request.realism_profile == "identity_max" and character_identity_elements
+                        else max(request.continuity_strength, 0.95 if character_identity_elements and request.continuity_mode == "strict" else request.continuity_strength)
+                    ),
                     element_reference_sheet_path=str(element_sheet_path) if element_sheet_path is not None else None,
                     element_reference_strength=(
                         max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
@@ -371,6 +413,7 @@ def run_factory_generation(
 
             if accepted_result is None or accepted_path is None:
                 raise RuntimeError(f"Scene {index + 1} did not produce an accepted render.")
+            any_detail_refined = any_detail_refined or bool(accepted_result.detail_refined)
 
             # Semantic audio QC happens before loudness mastering. Mastering cannot
             # repair gibberish; on Modal we get one LTX audio-only Retake and recheck.
@@ -546,7 +589,7 @@ def run_factory_generation(
                 "audio_warning_count": len(audio_warnings),
                 "render_mode": render_mode,
                 "realism_profile": request.realism_profile,
-                "detail_refined": render_mode == "dfr" and request.realism_profile != "standard",
+                "detail_refined": any_detail_refined,
                 "estimated_cost_usd": estimated_cost,
                 "estimated_cost_per_output_minute_usd": cost_per_minute,
                 "youtube_published": bool(youtube_url),
@@ -566,7 +609,7 @@ def run_factory_generation(
             quality=request.quality,
             quality_note=quality_note(request.quality, request.aspect_ratio),
             realism_profile=request.realism_profile,
-            detail_refined=(render_mode == "dfr" and request.realism_profile != "standard"),
+            detail_refined=any_detail_refined,
             audio_mode=request.audio_mode,
             has_audio=info.has_audio,
             width=info.width,

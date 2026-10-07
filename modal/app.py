@@ -9,6 +9,7 @@ import modal
 from ltx_worker import (
     build_command,
     build_refine_details_command,
+    ingredients_temporal_chunk_count,
     make_static_reference_video,
     preserve_source_audio,
     run_ltx_command,
@@ -239,7 +240,7 @@ def generate_video(
         "render_details": (
             f"{width}x{height} · {duration_seconds:.2f}s · "
             + (
-                f"Elements Ingredients IC-LoRA · identity reference · {static_reference_frame_count(duration_seconds)}f matched guide"
+                f"Elements Ingredients IC-LoRA · stage-2 identity lock · {static_reference_frame_count(duration_seconds)}f matched guide"
                 if element_reference_sheet_bytes
                 else ("DFR production · single-pass scene" if mode == "dfr" else "Distilled preview")
             )
@@ -255,7 +256,11 @@ def generate_video(
         "render_seconds": elapsed,
         "gpu": GPU_TYPE,
         "reference_conditioned": bool(reference_image_bytes or element_reference_sheet_bytes),
-        "chunk_count": 1 if element_reference_sheet_bytes else (temporal_chunk_count(duration_seconds) if mode == "distilled" else 1),
+        "chunk_count": (
+            ingredients_temporal_chunk_count(duration_seconds)
+            if element_reference_sheet_bytes
+            else (temporal_chunk_count(duration_seconds) if mode == "distilled" else 1)
+        ),
         "render_mode": "ingredients" if element_reference_sheet_bytes else mode,
         "realism_profile": realism,
         "detail_refined": apply_detail_refiner,

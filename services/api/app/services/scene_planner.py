@@ -211,6 +211,41 @@ def _sentence_bounded_excerpt(value: str, word_budget: int) -> str:
     return " ".join(selected) if selected else _limit_words(compact, word_budget)
 
 
+def _single_shot_user_prompt(prompt: str, max_words: int = 320) -> str:
+    """Compact a long talking-head prompt without dropping its hard visual constraints.
+
+    For one-shot Creator renders, the old generic 190-word cap could silently lose
+    wardrobe, dialogue or lighting instructions. This deterministic selector keeps
+    user-authored high-value sentences only; it does not invent or rewrite content.
+    """
+    compact = _compact(prompt)
+    if len(compact.split()) <= max_words:
+        return compact
+    sentences = [
+        _compact(piece)
+        for piece in re.split(r"(?<=[.!?])\s+", compact)
+        if _compact(piece)
+    ]
+    critical_terms = (
+        "wear", "wardrobe", "sweater", "shirt", "dress", "jacket", "coat", "top", "trouser", "jeans",
+        "skin", "face", "hair", "eyes", "camera", "shot", "lens", "desk", "table", "microphone", "monitor",
+        "background", "backdrop", "lighting", "light", "audio", "voice", "sound", "says", "say", "dialogue",
+    )
+    selected: set[int] = set()
+    for index, sentence in enumerate(sentences):
+        lower = sentence.lower()
+        if index < 3 or '"' in sentence or any(term in lower for term in critical_terms):
+            selected.add(index)
+    if sentences:
+        selected.add(len(sentences) - 1)
+
+    ordered = [sentences[index] for index in range(len(sentences)) if index in selected]
+    result = " ".join(ordered)
+    if len(result.split()) <= max_words:
+        return result
+    return _sentence_bounded_excerpt(result, max_words)
+
+
 def _direct_story_segments(
     prompt: str,
     scene_count: int,
@@ -413,8 +448,10 @@ ENTITY/CARDINALITY RULES:
 
 CHARACTER BIBLE RULES:
 - Preserve explicit user-provided identity traits; do not replace them with generic descriptions.
-- For recurring humans lock apparent age/stage, face structure, skin tone, eyes, hair, build, clothing palette/design,
-  jewelry/accessories and recurring props. Keep each named identity distinct.
+- For recurring humans lock apparent age/stage, face structure, skin tone, eyes, hair, build and recurring identity traits.
+- Wardrobe is a hard shot constraint: preserve the user's exact garment type, colors, pattern, material, sleeves/neckline and accessories.
+  Never merge or hybridize two outfits. If a shot explicitly changes clothing, the new shot wardrobe overrides earlier/reference clothing.
+- Keep each named identity distinct.
 - For creatures lock species, size/proportions, colors/markings and distinctive features.
 - Keep this bible compact enough to condition every relevant shot; do not paste the whole manuscript into it.
 
@@ -432,6 +469,7 @@ SCENE RULES:
 - When the next shot is image-conditioned by the previous approved frame, wording must describe what CHANGES/NEXT ACTION,
   not recreate already-established faces, clothes or bodies.
 - Avoid morph transitions through bodies. Prefer natural cuts, camera movement, match cuts, scenery dissolves or environmental transitions.
+- Reject AI-looking construction in the plan itself: no unexplained extra straps/buttons/zippers, duplicated props, warped hands, invented text/signage, or unstable set geometry.
 - Do not place two copies of the same named identity in one frame unless the manuscript explicitly requests a duplicate.
 - AUDIO DIRECTION must be chronological and concise. Do not invent speech.
 - If dialogue is requested, include ONLY the exact short line(s) spoken in this shot, in quotes, with the correct speaker.
@@ -516,7 +554,10 @@ def create_prompt_only_plan(
     character_bible = local_character_bible(clean_prompt)
     style_bible = local_style_bible(clean_prompt)
     entity_locks = infer_local_entity_locks(clean_prompt)
-    direct_segments = _direct_story_segments(clean_prompt, max(1, scene_count))
+    if max(1, scene_count) == 1:
+        direct_segments = [("Single continuous shot", _single_shot_user_prompt(clean_prompt))]
+    else:
+        direct_segments = _direct_story_segments(clean_prompt, max(1, scene_count), words_per_scene=150)
     style_context = _direct_style_context(clean_prompt)
     scenes: list[Scene] = []
     for index, (title, source_segment) in enumerate(direct_segments):
@@ -531,7 +572,7 @@ def create_prompt_only_plan(
             pieces.append(f"USER STYLE: {style_context}")
         pieces.append(f"USER STORY SEGMENT {index + 1}/{len(direct_segments)}: {source_segment}")
         pieces.append(f"SEQUENCING CONTROL: {transition}")
-        scene_prompt = _limit_words(" ".join(pieces), 190)
+        scene_prompt = _limit_words(" ".join(pieces), 340 if max(1, scene_count) == 1 else 220)
         scenes.append(
             Scene(
                 id=index + 1,

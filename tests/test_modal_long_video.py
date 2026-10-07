@@ -103,21 +103,47 @@ class ModalLongVideoTests(unittest.TestCase):
         self.assertIn("--lora", command)
         self.assertIn("ltx-2.5-22b-ic-lora-ingredients-0.9.safetensors", joined)
         self.assertIn("--image", command)
+        self.assertIn("--stage-2-ic-lora", command)
+        self.assertIn("--chunk-pixel-frames", command)
+        self.assertEqual(command[command.index("--chunk-pixel-frames") + 1], "121")
+        self.assertEqual(command[command.index("--chunk-carry-frames") + 1], "25")
+        self.assertGreater(ltx_worker.ingredients_temporal_chunk_count(15), 1)
         self.assertNotIn("--detailing-lora", command)
 
-    def test_ingredients_rejects_thirty_second_identity_scene(self):
-        with self.assertRaises(ValueError):
-            ltx_worker.build_command(
-                prompt="Reference sheet: Radha. Generated video: one long shot.",
-                output_path=Path("/tmp/out.mp4"),
-                width=1920,
-                height=1088,
-                duration_seconds=30,
-                seed=42,
-                decoder="conv",
-                render_mode="dfr",
-                element_reference_video_path=Path("/tmp/reference.mp4"),
-            )
+    def test_ingredients_accepts_thirty_second_identity_scene_with_temporal_windows_and_stage2_lock(self):
+        command = ltx_worker.build_command(
+            prompt="Reference sheet: Radha. Generated video: one long shot.",
+            output_path=Path("/tmp/out.mp4"),
+            width=1920,
+            height=1088,
+            duration_seconds=30,
+            seed=42,
+            decoder="diffusion",
+            render_mode="dfr",
+            element_reference_video_path=Path("/tmp/reference.mp4"),
+        )
+        self.assertIn("ltx_pipelines.ic_lora", command)
+        self.assertIn("--stage-2-ic-lora", command)
+        self.assertIn("--chunk-pixel-frames", command)
+        self.assertGreater(ltx_worker.ingredients_temporal_chunk_count(30), 1)
+        self.assertIn("ltx-2.5-video-vae-bf16.safetensors", " ".join(command))
+
+    def test_ingredients_large_canvas_uses_spatial_tiling_with_stage2_lock(self):
+        command = ltx_worker.build_command(
+            prompt="Reference sheet: presenter. Generated video: stable presenter.",
+            output_path=Path("/tmp/out.mp4"),
+            width=3840,
+            height=2176,
+            duration_seconds=15,
+            seed=42,
+            decoder="diffusion",
+            render_mode="dfr",
+            element_reference_video_path=Path("/tmp/reference.mp4"),
+        )
+        self.assertIn("--tile", command)
+        self.assertIn("--stage-2-ic-lora", command)
+        self.assertEqual(command[command.index("--tile-height") + 1], "576")
+        self.assertEqual(command[command.index("--tile-width") + 1], "1024")
 
 
     def test_ingredients_reference_video_matches_target_length_and_resolution(self):

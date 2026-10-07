@@ -32,7 +32,7 @@ class FactoryGenerationRequest(BaseModel):
     decoder: DecoderName = "conv"
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
     continuity_mode: ContinuityMode = "strict"
-    continuity_strength: float = Field(default=0.85, ge=0.0, le=1.0)
+    continuity_strength: float = Field(default=0.95, ge=0.0, le=1.0)
     continuity_qc_mode: ContinuityQCMode = "strict"
     continuity_max_retries: int = Field(default=1, ge=0, le=2)
     enhance_prompt: bool = False

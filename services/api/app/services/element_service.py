@@ -32,6 +32,19 @@ ALLOWED_IMAGE_TYPES = {
 ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z][A-Za-z0-9_-]{0,31})")
+VALID_ASSET_ROLES = {"primary", "face", "full_body", "profile", "costume", "object", "location", "style", "support"}
+
+
+def _auto_asset_role(element_type: str, index: int) -> str:
+    if element_type == "character":
+        return ("face", "full_body", "profile", "costume")[index] if index < 4 else "support"
+    if element_type == "prop":
+        return "object"
+    if element_type == "location":
+        return "location"
+    if element_type == "style":
+        return "style"
+    return "support"
 
 
 class ElementError(RuntimeError):
@@ -355,7 +368,11 @@ def create_element(
         asset_ids: list[str] = []
         try:
             for index, upload in enumerate(upload_list):
-                role = "primary" if index == 0 else (upload.role if upload.role in {"face", "full_body", "profile", "costume", "object", "location", "style", "support"} else "support")
+                requested_role = upload.role if upload.role in VALID_ASSET_ROLES else "support"
+                # Older clients sent every upload as plain "support". Give those
+                # references useful semantic roles automatically so the reference
+                # sheet can separate face identity from wardrobe/body guidance.
+                role = _auto_asset_role(element_type, index) if requested_role == "support" else requested_role
                 asset_ids.append(_save_asset(conn, workspace_id, element_id, upload, role=role))
             _create_version(conn, workspace_id, element_id, primary_asset_id=asset_ids[0])
             conn.commit()
@@ -382,8 +399,10 @@ def add_element_assets(workspace_id: str, element_id: str, uploads: Iterable[Upl
         existing = _get_assets(conn, workspace_id, element_id)
         if len(existing) + len(upload_list) > settings.element_max_assets_per_element:
             raise ElementError(f"An Element can contain at most {settings.element_max_assets_per_element} reference images.")
-        for upload in upload_list:
-            _save_asset(conn, workspace_id, element_id, upload, role=upload.role or "support")
+        for offset, upload in enumerate(upload_list):
+            requested_role = upload.role if upload.role in VALID_ASSET_ROLES else "support"
+            role = _auto_asset_role(str(element["type"]), len(existing) + offset) if requested_role == "support" else requested_role
+            _save_asset(conn, workspace_id, element_id, upload, role=role)
         _create_version(conn, workspace_id, element_id)
         conn.commit()
         row = conn.execute("SELECT * FROM elements WHERE id=?", (element_id,)).fetchone()
@@ -512,10 +531,12 @@ def resolve_element_bindings(workspace_id: str, bindings: list[ElementBinding]) 
         ordered_assets = [primary] + [asset for asset in element["assets"] if asset["id"] != primary["id"]]
         reference_paths: list[str] = []
         reference_urls: list[str] = []
+        reference_roles: list[str] = []
         for asset in ordered_assets:
             asset_path, _ = resolve_element_asset(workspace_id, asset["id"])
             reference_paths.append(str(asset_path))
             reference_urls.append(asset["asset_url"])
+            reference_roles.append(str(asset.get("role") or "support"))
         resolved.append(
             ResolvedElementBinding(
                 element_id=element["id"],
@@ -525,12 +546,14 @@ def resolve_element_bindings(workspace_id: str, bindings: list[ElementBinding]) 
                 type=element["type"],
                 description=element["description"],
                 reference_mode=binding.reference_mode,
+                wardrobe_policy=binding.wardrobe_policy,
                 strength=binding.strength,
                 apply_to_all_scenes=binding.apply_to_all_scenes,
                 primary_asset_path=reference_paths[0],
                 primary_asset_url=reference_urls[0],
                 reference_asset_paths=reference_paths,
                 reference_asset_urls=reference_urls,
+                reference_asset_roles=reference_roles,
             )
         )
     return resolved
@@ -550,6 +573,23 @@ def elements_for_scene(scene_prompt: str, bindings: list[ResolvedElementBinding]
     # split moved the @mention into a neighboring segment, preserve character/style
     # identity across the film when marked global; otherwise do not inject unused assets.
     return selected
+
+
+WARDROBE_DESCRIPTION_TERMS = (
+    "wear", "wearing", "wardrobe", "outfit", "costume", "sweater", "shirt", "t-shirt",
+    "dress", "jacket", "coat", "top", "blouse", "hoodie", "trouser", "pants", "jeans",
+    "skirt", "shorts", "vest", "suit", "tie", "shoe", "boots", "sleeve", "neckline",
+)
+
+
+def _identity_only_description(value: str) -> str:
+    """Keep identity traits while removing reference-clothing text for prompt wardrobe mode."""
+    sentences = [piece.strip() for piece in re.split(r"(?<=[.!?])\s+|[;\n]+", value or "") if piece.strip()]
+    identity = [
+        sentence for sentence in sentences
+        if not any(term in sentence.lower() for term in WARDROBE_DESCRIPTION_TERMS)
+    ]
+    return " ".join(identity)[:420].strip()
 
 
 def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBinding]) -> str:
@@ -572,9 +612,20 @@ def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBind
     if identity_bindings or len(bindings) > 1:
         panel_lines: list[str] = []
         for index, binding in enumerate(bindings, start=1):
-            description = " ".join(binding.description.split())[:420]
+            if binding.type == "character" and binding.wardrobe_policy == "prompt":
+                description = _identity_only_description(binding.description)
+                wardrobe_note = (
+                    " Identity reference only: preserve face, hairline, age, skin and stable body proportions. "
+                    "Ignore clothing visible in the reference; the Generated video wardrobe is authoritative."
+                )
+            else:
+                description = " ".join(binding.description.split())[:420]
+                wardrobe_note = (
+                    " Preserve the reference wardrobe exactly unless the scene explicitly changes it."
+                    if binding.type == "character" else ""
+                )
             panel_lines.append(
-                f"Panel {index}: {binding.type.upper()} {binding.name}. {description}".rstrip()
+                f"Panel {index}: {binding.type.upper()} {binding.name}. {description}{wardrobe_note}".rstrip()
             )
         blocks.append("Reference sheet: " + " ".join(panel_lines))
         blocks.append(
@@ -582,6 +633,18 @@ def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBind
             "Begin visible natural motion immediately on the first generated frames; do not hold, freeze, "
             "or replay the reference sheet as an opening shot unless the user explicitly asks for a still hold."
         )
+        prompt_wardrobe = [
+            binding.name for binding in identity_bindings
+            if binding.type == "character" and binding.wardrobe_policy == "prompt"
+        ]
+        if prompt_wardrobe:
+            blocks.append(
+                "IDENTITY / WARDROBE SEPARATION: For " + ", ".join(prompt_wardrobe) +
+                ", use the reference for facial identity, hairline, age and stable human proportions only. "
+                "The Generated video wardrobe description is authoritative. Do not copy, blend, layer, recolor, "
+                "or hybridize clothing from the reference image when the scene specifies different clothing. "
+                "Keep one coherent garment construction with the exact requested colors, pattern and material."
+            )
 
     if start_frame_bindings:
         blocks.append(
@@ -593,6 +656,38 @@ def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBind
     blocks.append("Generated video: " + action.strip())
     return "\n\n".join(blocks)
 
+
+def _paste_face_priority_crop(canvas: Image.Image, image_path: str, box: tuple[int, int, int, int]) -> None:
+    """Place an upper-face/shoulder crop when a character reference also contains clothing.
+
+    Ingredients strongly carries whatever appears in its reference sheet. For the default
+    prompt-wardrobe mode we therefore avoid feeding a large full-body outfit when the user
+    wants the face identity but a new garment described in the scene prompt.
+    """
+    left, top, right, bottom = box
+    if right <= left or bottom <= top:
+        return
+    with Image.open(image_path) as source:
+        source = ImageOps.exif_transpose(source).convert("RGB")
+        sw, sh = source.size
+        if sh >= sw * 1.15:
+            crop_h = max(128, int(sh * 0.46))
+            crop_w = min(sw, max(128, int(crop_h * 1.05)))
+            x0 = max(0, (sw - crop_w) // 2)
+            y0 = max(0, int(sh * 0.02))
+            source = source.crop((x0, y0, min(sw, x0 + crop_w), min(sh, y0 + crop_h)))
+        elif sh >= sw * 0.8:
+            crop_h = max(128, int(sh * 0.68))
+            y0 = max(0, int(sh * 0.02))
+            source = source.crop((0, y0, sw, min(sh, y0 + crop_h)))
+        fitted = ImageOps.contain(
+            source,
+            (right - left, bottom - top),
+            method=Image.Resampling.LANCZOS,
+        )
+        x = left + ((right - left) - fitted.width) // 2
+        y = top + ((bottom - top) - fitted.height) // 2
+        canvas.paste(fitted, (x, y))
 
 def _paste_contained(canvas: Image.Image, image_path: str, box: tuple[int, int, int, int]) -> None:
     left, top, right, bottom = box
@@ -610,26 +705,59 @@ def _paste_contained(canvas: Image.Image, image_path: str, box: tuple[int, int, 
         canvas.paste(fitted, (x, y))
 
 
+def _reference_assets_for_panel(binding: ResolvedElementBinding) -> list[tuple[str, str]]:
+    paths = list(binding.reference_asset_paths or [binding.primary_asset_path])
+    roles = list(binding.reference_asset_roles or [])
+    pairs = [
+        (path, roles[index] if index < len(roles) else "support")
+        for index, path in enumerate(paths)
+    ]
+    if binding.type != "character":
+        return pairs[:3]
+
+    if binding.wardrobe_policy == "prompt":
+        # Face/profile references are safe identity signals when the scene asks for
+        # a different outfit. Full-body/costume panels can overpower the text prompt.
+        identity = [item for item in pairs if item[1] in {"face", "profile"}]
+        fallback = [item for item in pairs if item[1] not in {"full_body", "costume"}]
+        selected = identity or fallback or pairs[:1]
+        return selected[:2]
+
+    priority = {"face": 0, "primary": 1, "full_body": 2, "profile": 3, "costume": 4, "support": 5}
+    return sorted(pairs, key=lambda item: priority.get(item[1], 6))[:3]
+
+
 def _paste_element_panel(canvas: Image.Image, binding: ResolvedElementBinding, box: tuple[int, int, int, int]) -> None:
-    """Compose up to three views for one Element while keeping the primary dominant."""
+    """Compose semantically selected views while keeping identity and wardrobe controls separate."""
     left, top, right, bottom = box
-    paths = list(binding.reference_asset_paths or [binding.primary_asset_path])[:3]
-    if len(paths) == 1:
-        _paste_contained(canvas, paths[0], box)
+    assets = _reference_assets_for_panel(binding)
+    if not assets:
+        return
+
+    def paste(path: str, role: str, target: tuple[int, int, int, int]) -> None:
+        # In prompt-wardrobe mode every character reference is treated as an identity
+        # source, even if an older Element mislabeled a full-body upload as `face`.
+        # The upper-face crop prevents the reference outfit from overpowering text.
+        if binding.type == "character" and binding.wardrobe_policy == "prompt":
+            _paste_face_priority_crop(canvas, path, target)
+        else:
+            _paste_contained(canvas, path, target)
+
+    if len(assets) == 1:
+        paste(assets[0][0], assets[0][1], box)
         return
 
     width = right - left
-    primary_right = left + max(1, int(width * 0.64))
-    _paste_contained(canvas, paths[0], (left, top, primary_right, bottom))
+    primary_right = left + max(1, int(width * 0.68))
+    paste(assets[0][0], assets[0][1], (left, top, primary_right, bottom))
     side_left = min(right - 1, primary_right)
-    if len(paths) == 2:
-        _paste_contained(canvas, paths[1], (side_left, top, right, bottom))
+    if len(assets) == 2:
+        paste(assets[1][0], assets[1][1], (side_left, top, right, bottom))
         return
 
     middle = top + max(1, (bottom - top) // 2)
-    _paste_contained(canvas, paths[1], (side_left, top, right, middle))
-    _paste_contained(canvas, paths[2], (side_left, middle, right, bottom))
-
+    paste(assets[1][0], assets[1][1], (side_left, top, right, middle))
+    paste(assets[2][0], assets[2][1], (side_left, middle, right, bottom))
 
 def build_reference_sheet(bindings: list[ResolvedElementBinding], output_path: Path) -> Path:
     if not bindings:
@@ -650,7 +778,12 @@ def build_reference_sheet(bindings: list[ResolvedElementBinding], output_path: P
         top = row * cell_h
         right = width if col == columns - 1 else left + cell_w
         bottom = height if row == rows - 1 else top + cell_h
-        _paste_element_panel(canvas, binding, (left, top, right, bottom))
+        gutter = 4
+        _paste_element_panel(
+            canvas,
+            binding,
+            (left + gutter, top + gutter, max(left + gutter + 1, right - gutter), max(top + gutter + 1, bottom - gutter)),
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path, format="PNG", optimize=True)

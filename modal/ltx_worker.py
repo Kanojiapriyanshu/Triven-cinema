@@ -33,9 +33,14 @@ LONG_VIDEO_PIXEL_FRAMES = 97
 LONG_VIDEO_CARRY_FRAMES = 25
 LONG_VIDEO_MIN_DURATION_SECONDS = 20.0
 DFR_SINGLE_PASS_MAX_SECONDS = 30.0
-INGREDIENTS_EXPERIMENTAL_MAX_SECONDS = 20.0
+INGREDIENTS_EXPERIMENTAL_MAX_SECONDS = 30.0
 INGREDIENTS_REFERENCE_FPS = 24
 INGREDIENTS_REFERENCE_MIN_FRAMES = 121
+# Ingredients was trained at 121 frames. For longer talking-head shots we keep
+# one LTX pipeline invocation but stream its temporal denoising in 121-frame
+# windows with overlap, keeping each window close to the adapter's training bucket.
+INGREDIENTS_CHUNK_PIXEL_FRAMES = 121
+INGREDIENTS_CHUNK_CARRY_FRAMES = 25
 
 
 def static_reference_frame_count(duration_seconds: float, fps: int = INGREDIENTS_REFERENCE_FPS) -> int:
@@ -117,6 +122,23 @@ def temporal_chunk_count(
     return 1 + math.ceil((total_frames - pixel_frames) / stride)
 
 
+
+
+def ingredients_temporal_chunk_count(
+    duration_seconds: float,
+    *,
+    fps: int = INGREDIENTS_REFERENCE_FPS,
+    pixel_frames: int = INGREDIENTS_CHUNK_PIXEL_FRAMES,
+    carry_frames: int = INGREDIENTS_CHUNK_CARRY_FRAMES,
+) -> int:
+    total_frames = frames_for_duration(duration_seconds, fps=fps)
+    if total_frames <= pixel_frames:
+        return 1
+    stride = pixel_frames - carry_frames
+    if stride <= 0:
+        raise ValueError("Ingredients temporal carry must be smaller than the chunk window.")
+    return 1 + math.ceil((total_frames - pixel_frames) / stride)
+
 def build_command(
     *,
     prompt: str,
@@ -190,8 +212,29 @@ def build_command(
             [
                 "--lora", str(INGREDIENTS_LORA), f"{strength:.3f}",
                 "--video-conditioning", str(element_reference_video_path), f"{strength:.3f}",
+                # v1.4.2 defaults stage 2 to the bare checkpoint. Keeping the
+                # Ingredients adapter/reference active through full-resolution
+                # reconstruction materially reduces face/outfit drift.
+                "--stage-2-ic-lora",
             ]
         )
+        if num_frames > INGREDIENTS_CHUNK_PIXEL_FRAMES:
+            command.extend(
+                [
+                    "--chunk-pixel-frames", str(INGREDIENTS_CHUNK_PIXEL_FRAMES),
+                    "--chunk-carry-frames", str(INGREDIENTS_CHUNK_CARRY_FRAMES),
+                ]
+            )
+        if max(width, height) >= 3000:
+            # Large identity-conditioned finals use per-step transformer tiling;
+            # v1.4.2 requires stage-2 IC-LoRA when the full-resolution stage tiles.
+            command.extend(
+                [
+                    "--tile",
+                    "--tile-height", str(REFINE_TILE_HEIGHT),
+                    "--tile-width", str(REFINE_TILE_WIDTH),
+                ]
+            )
     elif mode == "dfr":
         command.extend(
             [

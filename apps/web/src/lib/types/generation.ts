@@ -12,6 +12,8 @@ export type YouTubePrivacy = "private" | "unlisted" | "public";
 export type JobStatusName = "queued" | "running" | "completed" | "failed";
 export type ElementType = "character" | "prop" | "location" | "style";
 export type ElementReferenceMode = "identity" | "start_frame";
+export type ElementWardrobePolicy = "prompt" | "reference";
+export type ElementAssetRole = "primary" | "face" | "full_body" | "profile" | "costume" | "object" | "location" | "style" | "support";
 
 export interface ElementAsset {
   id: string;
@@ -21,7 +23,7 @@ export interface ElementAsset {
   size_bytes: number;
   width: number | null;
   height: number | null;
-  role: string;
+  role: ElementAssetRole;
   asset_url: string;
   created_at: string;
 }
@@ -54,6 +56,7 @@ export interface ElementBinding {
   version_id?: string | null;
   handle: string;
   reference_mode: ElementReferenceMode;
+  wardrobe_policy: ElementWardrobePolicy;
   strength: number;
   apply_to_all_scenes: boolean;
 }

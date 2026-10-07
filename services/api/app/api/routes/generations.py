@@ -29,7 +29,7 @@ from app.services.billing_service import (
     consume_credits,
     refund_credits,
 )
-from app.services.continuity_service import compose_continuity_prompt, safe_continuity_id
+from app.services.continuity_service import compose_continuity_prompt, compose_render_integrity_prompt, safe_continuity_id
 from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
 from app.services.element_service import (
@@ -175,6 +175,10 @@ def _generate_video_impl(
 
     identity_elements = [item for item in active_elements if item.reference_mode == "identity"]
     start_frame_elements = [item for item in active_elements if item.reference_mode == "start_frame"]
+    character_identity_elements = [item for item in identity_elements if item.type == "character"]
+    prompt_wardrobe_authoritative = any(
+        item.wardrobe_policy == "prompt" for item in character_identity_elements
+    )
     use_ingredients = bool(identity_elements or len(active_elements) > 1)
     if use_ingredients and not settings.element_ingredients_enabled:
         raise ValueError("Element identity conditioning is disabled on this deployment.")
@@ -234,9 +238,17 @@ def _generate_video_impl(
                 entity_locks=enhanced_entity_locks,
                 visible_entity_counts=enhanced_visible_counts,
                 reference_frame_present=reference_path is not None,
+                prompt_wardrobe_authoritative=prompt_wardrobe_authoritative,
                 retry_level=attempt,
                 qc_feedback=last_qc_note,
             )
+        prompt_to_render = compose_render_integrity_prompt(
+            prompt_to_render,
+            realism_profile=request.realism_profile,
+            prompt_wardrobe_authoritative=prompt_wardrobe_authoritative,
+            retry_level=attempt,
+            qc_feedback=last_qc_note,
+        )
         prompt_to_render = _audio_prompt(prompt_to_render, request.audio_direction)
         if active_elements:
             prompt_to_render = compile_element_prompt(prompt_to_render, active_elements)
@@ -252,7 +264,14 @@ def _generate_video_impl(
             enhance_prompt=provider_enhance_prompt if attempt == 0 else False,
             render_mode=render_mode,
             reference_image_path=str(reference_path) if reference_path else None,
-            reference_strength=request.continuity_strength,
+            reference_strength=(
+                1.0
+                if request.realism_profile == "identity_max" and character_identity_elements
+                else max(
+                    request.continuity_strength,
+                    0.95 if character_identity_elements and request.continuity_mode == "strict" else request.continuity_strength,
+                )
+            ),
             element_reference_sheet_path=str(element_sheet_path) if element_sheet_path else None,
             element_reference_strength=(
                 max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
@@ -698,6 +717,11 @@ def generate_full_video(request: FullVideoGenerationRequest):
                     )
                     if request.continuity_mode != "off"
                     else scene.prompt
+                )
+                locked_prompt = compose_render_integrity_prompt(
+                    locked_prompt,
+                    realism_profile=request.realism_profile,
+                    prompt_wardrobe_authoritative=False,
                 )
                 locked_prompt = _audio_prompt(locked_prompt, request.audio_direction)
                 result = render_long_clip(

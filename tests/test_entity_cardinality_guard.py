@@ -62,7 +62,7 @@ Radha reaches the clearing. Krishna lowers his flute. Radha and Krishna look at 
         )
         self.assertEqual(request.continuity_qc_mode, "strict")
         self.assertEqual(request.continuity_max_retries, 1)
-        self.assertEqual(request.continuity_strength, 0.85)
+        self.assertEqual(request.continuity_strength, 0.95)
 
 
 if __name__ == "__main__":

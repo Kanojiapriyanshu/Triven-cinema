@@ -15,11 +15,15 @@ zip -r "$OUTPUT" . \
      '.next/*' \
      'apps/web/.next/*' \
      '__pycache__/*' \
+     '*/__pycache__/*' \
      '*.pyc' \
-     'storage/generated/*' \
-     'storage/jobs/*' \
-     'storage/metrics/*' \
-     'storage/benchmarks/*' \
-     'storage/logs/*' \
+     '*.pyo' \
+     '*.orig' \
+     '*.rej' \
+     '*.rej.orig' \
+     '.pytest_cache/*' \
+     'storage/*' \
+     '*.sqlite3' \
+     '*.sqlite3-*' \
      '*.zip'
 printf 'Created safe review ZIP: %s\n' "$OUTPUT"

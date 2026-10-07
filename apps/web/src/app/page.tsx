@@ -41,9 +41,11 @@ import type {
   BillingMeResponse,
   CinemaElement,
   ContinuityMode,
+  ElementAssetRole,
   ElementBinding,
   ElementReferenceMode,
   ElementType,
+  ElementWardrobePolicy,
   DecoderName,
   FactoryGenerationResponse,
   GenerationCapabilitiesResponse,
@@ -108,6 +110,7 @@ type StudioChatWorkspace = {
   tempoPreset: TempoPreset;
   selectedElementId: string | null;
   elementModes: Record<string, ElementReferenceMode>;
+  elementWardrobePolicies: Record<string, ElementWardrobePolicy>;
   elementApplyAll: Record<string, boolean>;
   elementStrengths: Record<string, number>;
   result: ScenePlanResponse | null;
@@ -154,6 +157,7 @@ function createEmptyChatWorkspace(): StudioChatWorkspace {
     tempoPreset: "auto",
     selectedElementId: null,
     elementModes: {},
+    elementWardrobePolicies: {},
     elementApplyAll: {},
     elementStrengths: {},
     result: null,
@@ -170,6 +174,7 @@ function normalizeChatWorkspace(value: Partial<StudioChatWorkspace> | null | und
     ...empty,
     ...(value || {}),
     elementModes: value?.elementModes || {},
+    elementWardrobePolicies: value?.elementWardrobePolicies || {},
     elementApplyAll: value?.elementApplyAll || {},
     elementStrengths: value?.elementStrengths || {},
     scenePrompts: value?.scenePrompts || {},
@@ -402,6 +407,24 @@ function primaryElementAsset(element: CinemaElement) {
   return element.assets.find((asset) => asset.id === element.primary_asset_id) || element.assets[0] || null;
 }
 
+function suggestedElementRoles(
+  type: ElementType,
+  count: number,
+  existing: ElementAssetRole[] = []
+): ElementAssetRole[] {
+  if (type === "character") {
+    const preferred: ElementAssetRole[] = ["face", "full_body", "profile", "costume"];
+    const available = preferred.filter((role) => !existing.includes(role));
+    return Array.from({ length: count }, (_, index) => available[index] || "support");
+  }
+  const role: ElementAssetRole = type === "prop" ? "object" : type === "location" ? "location" : "style";
+  return Array.from({ length: count }, () => role);
+}
+
+function elementRoleLabel(role: ElementAssetRole) {
+  return role.replaceAll("_", " ");
+}
+
 function elementTone(type: ElementType) {
   if (type === "character") return "element-character";
   if (type === "prop") return "element-prop";
@@ -480,6 +503,7 @@ export default function Home() {
   const [elementDescription, setElementDescription] = useState("");
   const [elementFiles, setElementFiles] = useState<File[]>([]);
   const [elementModes, setElementModes] = useState<Record<string, ElementReferenceMode>>({});
+  const [elementWardrobePolicies, setElementWardrobePolicies] = useState<Record<string, ElementWardrobePolicy>>({});
   const [elementApplyAll, setElementApplyAll] = useState<Record<string, boolean>>({});
   const [elementStrengths, setElementStrengths] = useState<Record<string, number>>({});
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -536,10 +560,11 @@ export default function Home() {
       version_id: element.current_version_id,
       handle: element.handle,
       reference_mode: elementModes[element.id] || "identity",
+      wardrobe_policy: element.type === "character" ? (elementWardrobePolicies[element.id] || "prompt") : "reference",
       strength: Math.max(0, Math.min(1, elementStrengths[element.id] ?? 1.0)),
       apply_to_all_scenes: Boolean(elementApplyAll[element.id]),
     })),
-    [referencedElements, activeElementLimit, elementModes, elementStrengths, elementApplyAll]
+    [referencedElements, activeElementLimit, elementModes, elementWardrobePolicies, elementStrengths, elementApplyAll]
   );
   const mentionSuggestions = useMemo(() => {
     if (mentionQuery == null) return [];
@@ -626,7 +651,7 @@ export default function Home() {
           // One-time migration from the pre-login browser history. Only migrate
           // after a successful empty server response, so shared-browser data is
           // never used as a fallback for an existing account.
-          const localMigration = readStoredChatSessions(authUser.id, true);
+          const localMigration = readStoredChatSessions(authUser?.id, true);
           if (localMigration.length) {
             sessions = localMigration;
             void Promise.allSettled(localMigration.map((item) => saveChatHistoryItem(chatToServer(item))));
@@ -634,11 +659,11 @@ export default function Home() {
           }
         }
         setChatSessions(sessions);
-        persistChatSessions(sessions, authUser.id);
+        persistChatSessions(sessions, authUser?.id);
       } catch {
         if (!active) return;
         // Server history is canonical. Offline fallback is account-scoped only.
-        setChatSessions(readStoredChatSessions(authUser.id));
+        setChatSessions(readStoredChatSessions(authUser?.id));
       } finally {
         if (active) setChatHistoryReady(true);
       }
@@ -673,6 +698,7 @@ export default function Home() {
       tempoPreset,
       selectedElementId,
       elementModes,
+      elementWardrobePolicies,
       elementApplyAll,
       elementStrengths,
       result,
@@ -740,6 +766,7 @@ export default function Home() {
     tempoPreset,
     selectedElementId,
     elementModes,
+    elementWardrobePolicies,
     elementApplyAll,
     elementStrengths,
     result,
@@ -836,6 +863,7 @@ export default function Home() {
     setTempoPreset(workspace.tempoPreset);
     setSelectedElementId(workspace.selectedElementId);
     setElementModes(workspace.elementModes);
+    setElementWardrobePolicies(workspace.elementWardrobePolicies);
     setElementApplyAll(workspace.elementApplyAll);
     setElementStrengths(workspace.elementStrengths);
     setResult(workspace.result);
@@ -960,6 +988,7 @@ export default function Home() {
     }
     setMentionQuery(null);
     setElementModes((current) => ({ ...current, [element.id]: current[element.id] || "identity" }));
+    if (element.type === "character") setElementWardrobePolicies((current) => ({ ...current, [element.id]: current[element.id] || "prompt" }));
     setElementStrengths((current) => ({ ...current, [element.id]: current[element.id] ?? 1.0 }));
     setElementApplyAll((current) => ({
       ...current,
@@ -993,11 +1022,56 @@ export default function Home() {
     setPrompt(next);
     setMentionQuery(null);
     setElementModes((current) => ({ ...current, [element.id]: current[element.id] || "identity" }));
+    if (element.type === "character") setElementWardrobePolicies((current) => ({ ...current, [element.id]: current[element.id] || "prompt" }));
     setElementStrengths((current) => ({ ...current, [element.id]: current[element.id] ?? 1.0 }));
     setElementApplyAll((current) => ({
       ...current,
       [element.id]: current[element.id] ?? (element.type === "character" || element.type === "style"),
     }));
+  }
+
+  function applyCreatorGradePreset() {
+    const activeCharacters = referencedElements.filter((element) => element.type === "character");
+    setQuality("1080p");
+    setDecoder("diffusion");
+    setContinuityMode("strict");
+    setFactoryTargetSeconds((current) => Math.max(30, current));
+    setFactorySceneSeconds(30);
+    setEnhancePrompt(false);
+    if (activeCharacters.length > 1) {
+      setRealismProfile("real_skin");
+      setError(
+        `Creator-grade solo presenter mode found ${activeCharacters.length} Character Elements (${activeCharacters.map((element) => `@${element.handle}`).join(", ")}). Keep only the one person who should appear in this shot; multiple identity sheets can blend faces.`
+      );
+      return;
+    }
+    if (activeCharacters.length) {
+      setRealismProfile("identity_max");
+      setElementModes((current) => {
+        const next = { ...current };
+        activeCharacters.forEach((element) => { next[element.id] = "identity"; });
+        return next;
+      });
+      setElementWardrobePolicies((current) => {
+        const next = { ...current };
+        activeCharacters.forEach((element) => { next[element.id] = "prompt"; });
+        return next;
+      });
+      setElementStrengths((current) => {
+        const next = { ...current };
+        activeCharacters.forEach((element) => { next[element.id] = 1.0; });
+        return next;
+      });
+      setElementApplyAll((current) => {
+        const next = { ...current };
+        activeCharacters.forEach((element) => { next[element.id] = true; });
+        return next;
+      });
+      setNotice("Creator-grade preset applied: 1080p Diffusion final, Identity Max, strict continuity, stage-2 Character lock and prompt-authoritative wardrobe.");
+    } else {
+      setRealismProfile("real_skin");
+      setNotice("Creator-grade render settings applied. Add a Character Element to enable Identity Max face locking.");
+    }
   }
 
   async function handleCreateElement() {
@@ -1014,6 +1088,7 @@ export default function Home() {
         type: elementType,
         description: elementDescription.trim(),
         files: elementFiles,
+        roles: suggestedElementRoles(elementType, elementFiles.length),
       });
       await refreshElements();
       setSelectedElementId(created.id);
@@ -1036,7 +1111,12 @@ export default function Home() {
     setElementBusy(true);
     setError("");
     try {
-      await addElementAssets(element.id, Array.from(files));
+      const incoming = Array.from(files);
+      await addElementAssets(
+        element.id,
+        incoming,
+        suggestedElementRoles(element.type, incoming.length, element.assets.map((asset) => asset.role))
+      );
       await refreshElements();
       setNotice(`Added reference images to @${element.handle}. A new immutable Element version was created.`);
     } catch (err) {
@@ -1116,9 +1196,11 @@ export default function Home() {
         decoder,
         seed,
         continuity_mode: continuityMode,
-        continuity_strength: 0.85,
-        continuity_qc_mode: enhancePrompt && quality !== "preview" ? "strict" : "auto",
-        continuity_max_retries: 1,
+        continuity_strength: referencedElements.some((element) => element.type === "character")
+          ? (realismProfile === "identity_max" ? 1.0 : 0.95)
+          : 0.9,
+        continuity_qc_mode: quality !== "preview" ? "strict" : "auto",
+        continuity_max_retries: realismProfile === "identity_max" ? 2 : 1,
         enhance_prompt: enhancePrompt,
         element_bindings: elementBindings,
         publish_to_youtube: publishToYouTube,
@@ -1245,7 +1327,7 @@ export default function Home() {
       entity_locks: result.entity_locks,
       visible_entity_counts: result.scenes[Math.max(sceneIndex, 0)]?.visible_entity_counts || {},
       continuity_qc_mode: quality === "preview" ? "auto" : "strict",
-      continuity_max_retries: 1,
+      continuity_max_retries: realismProfile === "identity_max" ? 2 : 1,
       reference_frame_filename: continuityMode === "strict" ? referenceFrameFilename : null,
       continuity_strength: 1.0,
       element_bindings: elementBindings,
@@ -1726,7 +1808,7 @@ export default function Home() {
                   <div className="studio-inspector-eyebrow">Cinema Studio</div>
                   <div className="studio-inspector-title">Generation mode</div>
                 </div>
-                <span className="studio-mini-pill">v10</span>
+                <span className="studio-mini-pill">v11</span>
               </div>
               <div className="studio-mode-switch">
                 {(["factory", "storyboard", "direct"] as GenerationMode[]).map((item) => (
@@ -1800,6 +1882,14 @@ export default function Home() {
                           <option value="start_frame">Exact starting frame</option>
                         </select>
                       </label>
+                      {selectedElement.type === "character" && (elementModes[selectedElement.id] || "identity") === "identity" && (
+                        <label className="studio-field-label">Wardrobe source
+                          <select value={elementWardrobePolicies[selectedElement.id] || "prompt"} onChange={(e) => setElementWardrobePolicies((current) => ({ ...current, [selectedElement.id]: e.target.value as ElementWardrobePolicy }))} className="studio-inspector-control">
+                            <option value="prompt">Follow scene prompt · recommended</option>
+                            <option value="reference">Lock reference outfit</option>
+                          </select>
+                        </label>
+                      )}
                       <label className="studio-field-label">Reference strength
                         <input type="range" min="0.55" max="1" step="0.05" value={Math.min(1, elementStrengths[selectedElement.id] ?? 1)} onChange={(e) => setElementStrengths((current) => ({ ...current, [selectedElement.id]: Number(e.target.value) }))} className="studio-range" />
                         <span className="studio-range-value">{Math.min(1, elementStrengths[selectedElement.id] ?? 1).toFixed(2)}</span>
@@ -1807,12 +1897,13 @@ export default function Home() {
                       <label className="studio-check-row"><input type="checkbox" checked={Boolean(elementApplyAll[selectedElement.id])} onChange={(e) => setElementApplyAll((current) => ({ ...current, [selectedElement.id]: e.target.checked }))} /><span>Keep this Element active across all Factory scenes</span></label>
                     </div>
 
-                    {selectedElement.type === "character" && <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--panel-subtle)] px-3 py-2 text-[10px] leading-5 text-[var(--text-muted)]">For the strongest face match, make the primary reference a sharp real photo with natural skin texture, neutral lighting and a clearly visible face. Supporting angles can be added beside it.</div>}
+                    {selectedElement.type === "character" && <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--panel-subtle)] px-3 py-2 text-[10px] leading-5 text-[var(--text-muted)]">Creator lock uses the Character reference in both IC-LoRA stages. For best identity, use a clean face close-up first, then full-body and profile views. Keep <strong>Follow scene prompt</strong> when the video needs a different outfit from the reference photo.</div>}
 
                     <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
                       {selectedElement.assets.map((reference) => (
-                        <button key={reference.id} type="button" onClick={() => void handleSetPrimaryElementAsset(selectedElement, reference.id)} className={`studio-asset-thumb ${reference.id === selectedElement.primary_asset_id ? "studio-asset-thumb-active" : ""}`} title="Set as canonical reference">
+                        <button key={reference.id} type="button" onClick={() => void handleSetPrimaryElementAsset(selectedElement, reference.id)} className={`studio-asset-thumb relative ${reference.id === selectedElement.primary_asset_id ? "studio-asset-thumb-active" : ""}`} title={`${elementRoleLabel(reference.role)} · click to set canonical reference`}>
                           <img src={absoluteApiUrl(reference.asset_url)} alt="" />
+                          <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[8px] capitalize text-white">{elementRoleLabel(reference.role)}</span>
                         </button>
                       ))}
                       <label className="studio-asset-thumb studio-asset-add" title="Add references">+<input type="file" multiple accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => void handleAddElementReferences(selectedElement, e.target.files)} /></label>
@@ -1835,6 +1926,17 @@ export default function Home() {
                 <div className="studio-inspector-title">Essentials</div>
                 <p className="studio-inspector-copy">Format, quality and scene length live beside Generate. Keep this panel for only what changes the production.</p>
                 <div className="mt-4 grid gap-3">
+                  {mode === "factory" && (
+                    <div className="studio-advanced-card">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-xs font-semibold text-[var(--text)]">Creator-grade talking head</div>
+                          <div className="mt-1 text-[10px] leading-5 text-[var(--text-muted)]">1080p Diffusion final · 30s continuous shot · strict visual QC · stage-2 Character lock · prompt-authoritative wardrobe.</div>
+                        </div>
+                        <button type="button" onClick={applyCreatorGradePreset} className="studio-small-action whitespace-nowrap">Apply preset</button>
+                      </div>
+                    </div>
+                  )}
                   {mode === "factory" ? (
                     <Control label="Final runtime"><select className="studio-inspector-control" value={factoryTargetSeconds} onChange={(e) => setFactoryTargetSeconds(Number(e.target.value))}>{FACTORY_TARGETS.map((value) => <option key={value} value={value}>{value < 60 ? `${value} seconds` : `${value / 60} minute${value === 60 ? "" : "s"}`}</option>)}</select></Control>
                   ) : mode === "storyboard" ? (
@@ -1847,9 +1949,12 @@ export default function Home() {
                     {realismProfile === "standard"
                       ? "Standard keeps the normal production render without the extra detail pass."
                       : realismProfile === "identity_max"
-                        ? "Identity Max requires an identity-mode Character Element so the base generation starts from a real face reference, then applies the tiled Refine Details texture pass on final 1080p/4K renders."
-                        : "Real Skin adds the tiled LTX 2.5 Refine Details pass on final 1080p/4K renders. For the most realistic recurring face, add a sharp real Character Element or switch to Identity Max."}
+                        ? "Identity Max keeps the Character/Ingredients reference active through BOTH LTX IC-LoRA stages, applies strict early/mid/late artifact QC, then uses the tiled Refine Details texture pass on final renders."
+                        : "Real Skin adds the tiled LTX 2.5 Refine Details pass. Add a Character Element for persistent identity; use Follow scene prompt when the reference photo and requested wardrobe are different."}
                   </div>
+                  {realismProfile === "identity_max" && referencedElements.filter((element) => element.type === "character").length > 1 && (
+                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] px-3 py-2 text-[10px] leading-5 text-amber-700 dark:text-amber-300">Multiple Character identities are active. For a solo YouTube presenter, keep exactly one Character Element in the shot; extra @character references can compete and reduce face consistency.</div>
+                  )}
                 </div>
 
                 <details className="studio-inspector-details studio-inspector-advanced">
@@ -2006,10 +2111,10 @@ export default function Home() {
               <label className="studio-upload-dropzone">
                 <span className="studio-upload-icon">+</span>
                 <strong>Drop reference images or click to upload</strong>
-                <small>PNG, JPEG or WEBP · up to {capabilities?.elements?.max_assets_per_element ?? 8} references · first image is canonical</small>
+                <small>{elementType === "character" ? "Best order: 1 face close-up · 2 full body · 3 profile · 4 costume. Triven tags these automatically." : `PNG, JPEG or WEBP · up to ${capabilities?.elements?.max_assets_per_element ?? 8} references`}</small>
                 <input type="file" multiple accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => setElementFiles(Array.from(e.target.files || []))} />
               </label>
-              {elementFiles.length > 0 && <div className="studio-upload-file-list">{elementFiles.map((file) => <span key={`${file.name}-${file.size}`}>{file.name}</span>)}</div>}
+              {elementFiles.length > 0 && <div className="studio-upload-file-list">{elementFiles.map((file, index) => { const role = suggestedElementRoles(elementType, elementFiles.length)[index]; return <span key={`${file.name}-${file.size}`}><strong className="capitalize">{elementRoleLabel(role)}</strong> · {file.name}</span>; })}</div>}
             </div>
             <div className="studio-modal-footer">
               <button type="button" onClick={() => setShowElementCreator(false)} className="studio-secondary-button">Cancel</button>

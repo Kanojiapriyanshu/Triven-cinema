@@ -78,10 +78,10 @@ class Settings(BaseSettings):
     element_reference_sheet_height: int = 448
     element_ingredients_enabled: bool = True
     element_ingredients_strength: float = 1.0
-    # Ingredients was trained on a short reference-sheet bucket. We allow the
-    # current 15-20s Factory profile as an explicit B200 experiment, but keep 30s
-    # identity-conditioned scenes disabled until they are separately benchmarked.
-    element_ingredients_max_scene_seconds: float = 20.0
+    # Ingredients was trained at 121 frames. The Modal worker keeps longer creator
+    # shots in one output while streaming 121-frame overlapping temporal windows,
+    # so the explicit 30s 1080p creator profile can retain reference conditioning.
+    element_ingredients_max_scene_seconds: float = 30.0
 
     # Final-render audio guard. Gemini inspects rendered audio for gibberish or
     # unintended speech; Modal can repair failed audio via LTX Retake while keeping
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # a scene is accepted into the factory timeline.
     continuity_vision_qc_enabled: bool = True
     continuity_qc_timeout_seconds: float = 12.0
-    continuity_qc_max_frames: int = 3
+    continuity_qc_max_frames: int = 5
 
     # Demo account login. The current devansh.info demo intentionally returns the
     # generated OTP to the browser so testers can sign in without an email provider.

@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 
@@ -21,15 +22,32 @@ from app.services.identity_service import ensure_workspace, workspace_id_from_re
 router = APIRouter()
 
 
-def _read_uploads(files: list[UploadFile], *, default_role: str = "support") -> list[UploadedElementAsset]:
+def _parse_roles(raw: str, count: int) -> list[str]:
+    if not raw.strip():
+        return ["support"] * count
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ElementError("Reference roles must be a JSON array.") from exc
+    if not isinstance(value, list) or len(value) != count:
+        raise ElementError("Reference roles must match the number of uploaded images.")
+    allowed = {"primary", "face", "full_body", "profile", "costume", "object", "location", "style", "support"}
+    roles = [str(item) for item in value]
+    if any(role not in allowed for role in roles):
+        raise ElementError("Unsupported Element reference role.")
+    return roles
+
+
+def _read_uploads(files: list[UploadFile], *, roles: str = "") -> list[UploadedElementAsset]:
+    parsed_roles = _parse_roles(roles, len(files))
     uploads: list[UploadedElementAsset] = []
-    for file in files:
+    for index, file in enumerate(files):
         uploads.append(
             UploadedElementAsset(
                 original_filename=file.filename or "reference",
                 content_type=file.content_type or "application/octet-stream",
                 data=file.file.read(),
-                role=default_role,
+                role=parsed_roles[index],
             )
         )
     return uploads
@@ -56,6 +74,7 @@ def create_workspace_element(
     handle: str = Form(...),
     type: str = Form(...),
     description: str = Form(""),
+    roles: str = Form(""),
     files: list[UploadFile] = File(...),
 ) -> ElementResponse:
     workspace_id = ensure_workspace(request, response)
@@ -67,7 +86,7 @@ def create_workspace_element(
                 handle=handle,
                 element_type=type,
                 description=description,
-                uploads=_read_uploads(files),
+                uploads=_read_uploads(files, roles=roles),
             )
         )
     except ElementError as exc:
@@ -129,12 +148,13 @@ def add_workspace_element_assets(
     element_id: str,
     request: Request,
     response: Response,
+    roles: str = Form(""),
     files: list[UploadFile] = File(...),
 ) -> ElementResponse:
     workspace_id = ensure_workspace(request, response)
     try:
         return ElementResponse.model_validate(
-            add_element_assets(workspace_id, element_id, _read_uploads(files))
+            add_element_assets(workspace_id, element_id, _read_uploads(files, roles=roles))
         )
     except ElementError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

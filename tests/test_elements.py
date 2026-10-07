@@ -129,14 +129,21 @@ class ElementServiceTests(unittest.TestCase):
             element_type="character",
             description="Canonical Radha.",
             uploads=[
-                UploadedElementAsset("front.png", "image/png", image_bytes((255, 0, 0), (300, 600))),
-                UploadedElementAsset("profile.png", "image/png", image_bytes((0, 255, 0), (300, 600))),
-                UploadedElementAsset("body.png", "image/png", image_bytes((0, 0, 255), (300, 600))),
+                UploadedElementAsset("front.png", "image/png", image_bytes((255, 0, 0), (300, 600)), role="face"),
+                UploadedElementAsset("profile.png", "image/png", image_bytes((0, 255, 0), (300, 600)), role="profile"),
+                UploadedElementAsset("body.png", "image/png", image_bytes((0, 0, 255), (300, 600)), role="full_body"),
             ],
         )
         bindings = resolve_element_bindings(
             self.workspace,
-            [ElementBinding(element_id=radha["id"], version_id=radha["current_version_id"], handle="Radha")],
+            [
+                ElementBinding(
+                    element_id=radha["id"],
+                    version_id=radha["current_version_id"],
+                    handle="Radha",
+                    wardrobe_policy="reference",
+                )
+            ],
         )
         self.assertEqual(len(bindings[0].reference_asset_paths), 3)
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,6 +153,67 @@ class ElementServiceTests(unittest.TestCase):
                 self.assertIn((255, 0, 0), colors)
                 self.assertIn((0, 255, 0), colors)
                 self.assertIn((0, 0, 255), colors)
+
+
+    def test_character_uploads_receive_semantic_roles_in_order(self):
+        element = create_element(
+            self.workspace,
+            name="Presenter",
+            handle="Presenter",
+            element_type="character",
+            description="Canonical presenter.",
+            uploads=[
+                UploadedElementAsset("one.png", "image/png", image_bytes((200, 10, 10))),
+                UploadedElementAsset("two.png", "image/png", image_bytes((10, 200, 10))),
+                UploadedElementAsset("three.png", "image/png", image_bytes((10, 10, 200))),
+                UploadedElementAsset("four.png", "image/png", image_bytes((100, 100, 100))),
+            ],
+        )
+        self.assertEqual([asset["role"] for asset in element["assets"]], ["face", "full_body", "profile", "costume"])
+
+    def test_prompt_wardrobe_uses_identity_views_and_drops_reference_costume_language(self):
+        presenter = create_element(
+            self.workspace,
+            name="Presenter",
+            handle="Presenter",
+            element_type="character",
+            description=(
+                "Long dark-brown hair, warm brown eyes, oval face. "
+                "She is wearing a black leather jacket and blue jeans. "
+                "Natural freckles across the cheeks."
+            ),
+            uploads=[
+                UploadedElementAsset("face.png", "image/png", image_bytes((255, 0, 0), (300, 600)), role="face"),
+                UploadedElementAsset("body.png", "image/png", image_bytes((0, 255, 0), (300, 600)), role="full_body"),
+                UploadedElementAsset("profile.png", "image/png", image_bytes((0, 0, 255), (300, 600)), role="profile"),
+            ],
+        )
+        bindings = resolve_element_bindings(
+            self.workspace,
+            [
+                ElementBinding(
+                    element_id=presenter["id"],
+                    version_id=presenter["current_version_id"],
+                    handle="Presenter",
+                    wardrobe_policy="prompt",
+                )
+            ],
+        )
+        compiled = compile_element_prompt(
+            "@Presenter wears a white and soft-lavender cable-knit sweater.",
+            bindings,
+        )
+        self.assertIn("Generated video: Presenter wears a white and soft-lavender cable-knit sweater.", compiled)
+        self.assertIn("generated video wardrobe", compiled.lower())
+        self.assertNotIn("black leather jacket", compiled.lower())
+        self.assertNotIn("blue jeans", compiled.lower())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = build_reference_sheet(bindings, Path(tmp) / "sheet.png")
+            with Image.open(path).convert("RGB") as image:
+                colors = {color for _, color in (image.getcolors(maxcolors=image.width * image.height) or [])}
+                self.assertIn((255, 0, 0), colors)
+                self.assertIn((0, 0, 255), colors)
+                self.assertNotIn((0, 255, 0), colors)
 
     def test_signed_asset_url_loads_without_workspace_header_or_cookie(self):
         element = create_element(

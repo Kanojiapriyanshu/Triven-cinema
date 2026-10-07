@@ -87,6 +87,21 @@ class CharacterContinuityTests(unittest.TestCase):
         self.assertIn("DO NOT introduce, recreate, re-enter, spawn, mirror or clone", prompt)
         self.assertIn("Never create duplicate copies", prompt)
 
+
+    def test_scene_wardrobe_override_does_not_freeze_reference_clothing(self):
+        prompt = compose_continuity_prompt(
+            scene_prompt="The presenter now wears a white and soft-lavender cable-knit sweater.",
+            character_bible="Same presenter face, hair and body proportions.",
+            style_bible="Photoreal studio footage.",
+            scene_index=1,
+            scene_count=2,
+            reference_frame_present=True,
+            prompt_wardrobe_authoritative=True,
+        )
+        self.assertIn("current scene wardrobe is authoritative", prompt.lower())
+        self.assertIn("WARDROBE OVERRIDE", prompt)
+        self.assertIn("white and soft-lavender cable-knit sweater", prompt)
+
     def test_continuity_id_is_filename_safe(self):
         self.assertEqual(safe_continuity_id("../../story / demo"), "story-demo")
 

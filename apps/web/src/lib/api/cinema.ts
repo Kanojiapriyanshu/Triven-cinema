@@ -5,6 +5,7 @@ import type {
   CinemaElement,
   ElementListResponse,
   ElementType,
+  ElementAssetRole,
   CombineScenesRequest,
   CombineScenesResponse,
   FactoryGenerationRequest,
@@ -222,18 +223,21 @@ export async function createElement(payload: {
   type: ElementType;
   description?: string;
   files: File[];
+  roles?: ElementAssetRole[];
 }): Promise<CinemaElement> {
   const form = new FormData();
   form.append("name", payload.name);
   form.append("handle", payload.handle);
   form.append("type", payload.type);
   form.append("description", payload.description || "");
+  if (payload.roles?.length) form.append("roles", JSON.stringify(payload.roles));
   payload.files.forEach((file) => form.append("files", file));
   return apiJson("/api/v1/elements", { method: "POST", body: form }, "Unable to create Element.");
 }
 
-export async function addElementAssets(elementId: string, files: File[]): Promise<CinemaElement> {
+export async function addElementAssets(elementId: string, files: File[], roles?: ElementAssetRole[]): Promise<CinemaElement> {
   const form = new FormData();
+  if (roles?.length) form.append("roles", JSON.stringify(roles));
   files.forEach((file) => form.append("files", file));
   return apiJson(`/api/v1/elements/${encodeURIComponent(elementId)}/assets`, { method: "POST", body: form }, "Unable to add Element references.");
 }

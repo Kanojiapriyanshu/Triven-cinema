@@ -4,8 +4,8 @@ from app.schemas.factory import FactoryGenerationRequest
 from app.schemas.generation import ScenePlanRequest, VideoGenerationRequest
 from app.services.video_combiner import delivery_dimensions
 from app.services.video_profiles import duration_profile, validate_factory_scene_duration, validate_scene_duration
-from app.services.scene_planner import create_scene_plan
-from app.services.factory_service import _factory_scene_durations, _scene_seed
+from app.services.scene_planner import create_prompt_only_plan, create_scene_plan
+from app.services.factory_service import _factory_scene_durations, _scene_seed, _wants_single_continuous_shot
 
 
 class FactoryProfileTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class FactoryProfileTests(unittest.TestCase):
         )
         self.assertEqual(request.scene_duration_seconds, 20)
         self.assertEqual(request.continuity_qc_mode, "strict")
-        self.assertEqual(request.continuity_strength, 0.85)
+        self.assertEqual(request.continuity_strength, 0.95)
         self.assertEqual(request.realism_profile, "real_skin")
 
 
@@ -76,6 +76,12 @@ class FactoryProfileTests(unittest.TestCase):
         self.assertEqual(_factory_scene_durations(60, 20, 15), [20.0, 20.0, 20.0])
         self.assertEqual(_factory_scene_durations(60, 30, 15), [30.0, 30.0])
 
+
+    def test_continuous_shot_intent_is_detected(self):
+        self.assertTrue(_wants_single_continuous_shot("Filmed as one continuous static shot with no cuts."))
+        self.assertTrue(_wants_single_continuous_shot("A single take talking-head creator video."))
+        self.assertFalse(_wants_single_continuous_shot("A montage of several cinematic scenes."))
+
     def test_factory_uses_distinct_deterministic_seed_per_scene(self):
         seeds = [_scene_seed(42, index, 0) for index in range(6)]
         self.assertEqual(len(set(seeds)), 6)
@@ -94,6 +100,24 @@ class FactoryProfileTests(unittest.TestCase):
     def test_individual_render_keeps_bounded_prompt_limit(self):
         with self.assertRaises(ValueError):
             VideoGenerationRequest(prompt="x" * 8001)
+
+
+    def test_prompt_only_single_shot_preserves_wardrobe_dialogue_and_realism_constraints(self):
+        prompt = (
+            "Live-action premium cinema camera shot. The presenter has real skin with visible pores and long wavy dark-brown hair. "
+            "She wears a chunky cable-knit sweater in wide horizontal bands of white and soft lavender with visible wool fibers. "
+            "The camera is locked at eye level in a medium shot behind a pale oak table. "
+            + "Natural studio production detail. " * 120
+            + 'She says: "Hey everyone! The new Mac mini and Mac Studio are finally here." '
+            + "A large soft key light from front left keeps natural skin tones. Audio is clean studio voice with no music."
+        )
+        plan = create_prompt_only_plan(prompt, 1, target_scene_duration_seconds=30)
+        scene_prompt = plan.scenes[0].prompt.lower()
+        self.assertIn("cable-knit sweater", scene_prompt)
+        self.assertIn("white and soft lavender", scene_prompt)
+        self.assertIn("hey everyone", scene_prompt)
+        self.assertIn("visible pores", scene_prompt)
+        self.assertEqual(plan.scenes[0].duration_seconds, 30)
 
     def test_factory_storyboard_is_paced_for_long_scene(self):
         plan = create_scene_plan(

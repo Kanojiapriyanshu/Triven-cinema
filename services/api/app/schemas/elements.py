@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 ElementType = Literal["character", "prop", "location", "style"]
 ElementStatus = Literal["active", "archived"]
 ElementReferenceMode = Literal["identity", "start_frame"]
+ElementWardrobePolicy = Literal["prompt", "reference"]
 ElementAssetRole = Literal["primary", "face", "full_body", "profile", "costume", "object", "location", "style", "support"]
 
 
@@ -71,6 +72,7 @@ class ElementBinding(BaseModel):
     version_id: str | None = Field(default=None, min_length=8, max_length=64)
     handle: str = Field(..., min_length=1, max_length=40)
     reference_mode: ElementReferenceMode = "identity"
+    wardrobe_policy: ElementWardrobePolicy = "prompt"
     strength: float = Field(default=1.0, ge=0.0, le=1.0)
     apply_to_all_scenes: bool = False
 
@@ -88,9 +90,11 @@ class ResolvedElementBinding(BaseModel):
     type: ElementType
     description: str
     reference_mode: ElementReferenceMode
+    wardrobe_policy: ElementWardrobePolicy
     strength: float
     apply_to_all_scenes: bool
     primary_asset_path: str
     primary_asset_url: str
     reference_asset_paths: list[str] = Field(default_factory=list)
     reference_asset_urls: list[str] = Field(default_factory=list)
+    reference_asset_roles: list[ElementAssetRole] = Field(default_factory=list)

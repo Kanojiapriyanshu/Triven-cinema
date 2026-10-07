@@ -30,18 +30,16 @@ Triven Cinema is an AI video factory: prompt input, continuity-locked storyboard
 - Final MP4 preview and download.
 - Render timing metrics and optional GPU cost estimates.
 - Seed, preview-decoder, prompt-enhancement and production realism controls in the UI.
+- Creator-grade talking-head preset with stage-2 Character IC-LoRA lock, prompt-authoritative wardrobe, early/mid/late artifact QC, and 30s 1080p creator-shot support.
+- Semantic Character reference roles (face/full body/profile/costume) and identity-only reference-sheet composition when the prompt requests different clothing.
 - Modal GPU benchmark script and required-aspect-ratio smoke test.
 - Docker deployment baseline for the Next.js/FastAPI application layer.
 
 ## Important quality wording
 
-The current `1080p delivery` option creates a 1080-class output file after the LTX source render:
+Final-quality Modal jobs now use the LTX production pipelines on a 1080-class source canvas (for example 1920x1088 at 16:9) before final delivery normalization/crop. 4K uses the validated LTX-aligned 3840x2176 source grid before UHD delivery. Preview mode remains lower resolution for cost/speed.
 
-- 16:9 -> 1920x1080
-- 9:16 -> 1080x1920
-- 1:1 -> 1080x1080
-
-Triven now applies that delivery upscale at most once. It still does **not** claim the LTX source frames were natively generated at 1080p. The recording explicitly called for validating model-specific resolution/pass behavior, so native/high-fidelity LTX quality remains a benchmark task rather than a marketing claim.
+The UI does not treat resolution alone as a quality guarantee: Character identity, prompt adherence, temporal stability, audio correctness and artifact QC are separate production checks.
 
 ## Local setup
 
@@ -114,6 +112,8 @@ Important: the official DFR pipeline still expects the **distilled** LTX-2.5 tra
 The Refine Details repository is gated separately on Hugging Face. Before running `./scripts/setup_modal.sh`, accept access for both LTX-2.5 and `Lightricks/LTX-2.5-22b-IC-LoRA-Refine-Details`. The setup command downloads the refiner into the existing persistent Modal model volume.
 
 The application does not claim a numeric face-match guarantee. Generative identity can still drift because of pose, occlusion, lighting, motion and reference quality; Identity Max is the strongest supported path, not a biometric guarantee.
+
+See `docs/V11_CREATOR_GRADE_REALISM.md` for the creator-grade identity/wardrobe/QC architecture and recommended Character-reference workflow.
 
 ## Native audio verification
 
