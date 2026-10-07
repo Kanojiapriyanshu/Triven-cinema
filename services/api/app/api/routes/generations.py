@@ -252,6 +252,7 @@ def _generate_video_impl(
                 max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
                 if use_ingredients else settings.element_ingredients_strength
             ),
+            realism_profile=request.realism_profile,
             progress=chunk_progress,
         )
         candidate_path = Path(result.path)
@@ -352,6 +353,8 @@ def _generate_video_impl(
             "audio_mode": request.audio_mode,
             "decoder": effective_decoder,
             "render_mode": render_mode,
+            "realism_profile": request.realism_profile,
+            "detail_refined": result.detail_refined,
             "seed": request.seed,
             "has_audio": media_info.has_audio,
             "audio_codec": media_info.audio_codec,
@@ -390,6 +393,8 @@ def _generate_video_impl(
         model=request.model,
         quality=request.quality,
         quality_note=quality_note(request.quality, request.aspect_ratio),
+        realism_profile=request.realism_profile,
+        detail_refined=result.detail_refined,
         audio_mode=request.audio_mode,
         chunk_count=total_chunks,
         gpu=result.gpu,
@@ -452,6 +457,11 @@ async def generation_capabilities():
         ],
         aspect_ratios=["16:9", "9:16", "1:1"],
         decoders=["conv", "diffusion"],
+        realism_profiles=[
+            {"id": "standard", "label": "Standard", "description": "Existing production path without the extra texture refinement pass."},
+            {"id": "real_skin", "label": "Real Skin", "description": "Final-quality DFR/Ingredients render plus the official tiled LTX-2.5 Refine Details IC-LoRA."},
+            {"id": "identity_max", "label": "Identity Max", "description": "Real Skin final path intended for a character Element made from a sharp real reference photo."},
+        ],
         continuity_modes=["off", "balanced", "strict"],
         audio_modes=["native", "mastered", "mute"],
         image_conditioning=True,
@@ -652,7 +662,10 @@ def generate_full_video(request: FullVideoGenerationRequest):
     try:
         validate_scene_duration(quality=request.quality, duration_seconds=request.duration_seconds)
         ensure_minimum_free_disk()
-        provider = get_video_provider(request.provider or settings.video_provider, model=request.model)
+        provider_key = request.provider or settings.video_provider
+        provider = get_video_provider(provider_key, model=request.model)
+        render_mode = "dfr" if request.quality != "preview" and provider_key == "modal" else "distilled"
+        effective_decoder = "diffusion" if render_mode == "dfr" else request.decoder
         width, height = source_render_dimensions(request.aspect_ratio, request.quality)
 
         generated_paths: list[Path] = []
@@ -688,8 +701,10 @@ def generate_full_video(request: FullVideoGenerationRequest):
                     height=height,
                     duration_seconds=request.duration_seconds,
                     seed=request.seed,
-                    decoder=request.decoder,
+                    decoder=effective_decoder,
                     enhance_prompt=request.enhance_prompt and index == 0,
+                    render_mode=render_mode,
+                    realism_profile=request.realism_profile,
                     reference_image_path=(
                         str(previous_frame)
                         if request.continuity_mode == "strict" and previous_frame
@@ -742,7 +757,10 @@ def generate_full_video(request: FullVideoGenerationRequest):
                     "wall_seconds": round(total_wall_seconds, 3),
                     "quality": request.quality,
                     "audio_mode": request.audio_mode,
-                    "decoder": request.decoder,
+                    "decoder": effective_decoder,
+                    "render_mode": render_mode,
+                    "realism_profile": request.realism_profile,
+                    "detail_refined": any("Refine Details IC-LoRA" in detail for detail in render_details),
                     "has_audio": media_info.has_audio,
                     "audio_codec": media_info.audio_codec,
                     "estimated_cost_usd": estimated_cost,
@@ -762,6 +780,8 @@ def generate_full_video(request: FullVideoGenerationRequest):
                 model=request.model,
                 quality=request.quality,
                 quality_note=quality_note(request.quality, request.aspect_ratio),
+                realism_profile=request.realism_profile,
+                detail_refined=any("Refine Details IC-LoRA" in detail for detail in render_details),
                 audio_mode=request.audio_mode,
                 gpu=gpu,
                 media_info=media_info,

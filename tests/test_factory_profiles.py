@@ -43,6 +43,14 @@ class FactoryProfileTests(unittest.TestCase):
         self.assertEqual(request.scene_duration_seconds, 20)
         self.assertEqual(request.continuity_qc_mode, "strict")
         self.assertEqual(request.continuity_strength, 0.85)
+        self.assertEqual(request.realism_profile, "real_skin")
+
+
+    def test_direct_render_keeps_backward_compatible_realism_default(self):
+        request = VideoGenerationRequest(
+            prompt="A photoreal presenter speaks to camera in a bright home studio."
+        )
+        self.assertEqual(request.realism_profile, "standard")
 
     def test_factory_rejects_sub_fifteen_second_scene(self):
         with self.assertRaises(ValueError):

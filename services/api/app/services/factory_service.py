@@ -307,6 +307,7 @@ def run_factory_generation(
                         max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
                         if use_ingredients else settings.element_ingredients_strength
                     ),
+                    realism_profile=request.realism_profile,
                     progress=chunk_progress,
                 )
                 path = Path(result.path)
@@ -539,6 +540,8 @@ def run_factory_generation(
                 "audio_retake_count": audio_retake_count,
                 "audio_warning_count": len(audio_warnings),
                 "render_mode": render_mode,
+                "realism_profile": request.realism_profile,
+                "detail_refined": render_mode == "dfr" and request.realism_profile != "standard",
                 "estimated_cost_usd": estimated_cost,
                 "estimated_cost_per_output_minute_usd": cost_per_minute,
                 "youtube_published": bool(youtube_url),
@@ -557,6 +560,8 @@ def run_factory_generation(
             aspect_ratio=request.aspect_ratio,
             quality=request.quality,
             quality_note=quality_note(request.quality, request.aspect_ratio),
+            realism_profile=request.realism_profile,
+            detail_refined=(render_mode == "dfr" and request.realism_profile != "standard"),
             audio_mode=request.audio_mode,
             has_audio=info.has_audio,
             width=info.width,

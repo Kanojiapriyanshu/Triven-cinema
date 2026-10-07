@@ -142,6 +142,50 @@ class ModalLongVideoTests(unittest.TestCase):
         self.assertEqual(ltx_worker.static_reference_frame_count(1), 121)
         self.assertEqual(ltx_worker.static_reference_frame_count(5), 121)
 
+
+    def test_refine_details_uses_official_tiled_ic_lora_and_diffusion_vae(self):
+        command = ltx_worker.build_refine_details_command(
+            input_video_path=Path("/tmp/base.mp4"),
+            output_path=Path("/tmp/refined.mp4"),
+            width=1920,
+            height=1088,
+            duration_seconds=8,
+            seed=99,
+        )
+        joined = " ".join(command)
+        self.assertIn("ltx_pipelines.ic_lora", command)
+        self.assertIn("ltx-2.5-22b-ic-lora-refine-details-1.0.safetensors", joined)
+        self.assertIn("ltx-2.5-video-vae-bf16.safetensors", joined)
+        self.assertIn("--tile", command)
+        self.assertIn("--stage-2-ic-lora", command)
+        self.assertEqual(command[command.index("--tile-height") + 1], "576")
+        self.assertEqual(command[command.index("--tile-width") + 1], "1024")
+        self.assertNotIn("--chunk-pixel-frames", command)
+
+    def test_refine_details_streams_long_scene_in_97_frame_windows(self):
+        command = ltx_worker.build_refine_details_command(
+            input_video_path=Path("/tmp/base.mp4"),
+            output_path=Path("/tmp/refined.mp4"),
+            width=1920,
+            height=1088,
+            duration_seconds=15,
+            seed=99,
+        )
+        self.assertIn("--chunk-pixel-frames", command)
+        self.assertEqual(command[command.index("--chunk-pixel-frames") + 1], "97")
+        self.assertIn("--chunk-carry-frames", command)
+
+    def test_refine_details_keeps_source_audio_in_final_mux(self):
+        command = ltx_worker.build_preserve_source_audio_command(
+            refined_video_path=Path("/tmp/refined.mp4"),
+            source_video_path=Path("/tmp/base.mp4"),
+            output_path=Path("/tmp/final.mp4"),
+        )
+        joined = " ".join(command)
+        self.assertIn("-map 0:v:0", joined)
+        self.assertIn("-map 1:a:0?", joined)
+        self.assertIn("-c:a copy", joined)
+
     def test_dfr_rejects_more_than_thirty_seconds_single_pass(self):
         with self.assertRaises(ValueError):
             ltx_worker.build_command(

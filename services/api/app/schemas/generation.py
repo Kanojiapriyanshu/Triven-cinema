@@ -13,6 +13,7 @@ VideoModelName = Literal["ltx-2.5", "wan", "minimax"]
 DecoderName = Literal["conv", "diffusion"]
 ContinuityMode = Literal["off", "balanced", "strict"]
 ContinuityQCMode = Literal["off", "auto", "strict"]
+RealismProfile = Literal["standard", "real_skin", "identity_max"]
 JobStatusName = Literal["queued", "running", "completed", "failed"]
 JobStageName = Literal[
     "queued",
@@ -79,6 +80,7 @@ class VideoGenerationRequest(BaseModel):
     decoder: DecoderName = "conv"
     enhance_prompt: bool = False
     quality: RenderQuality = "preview"
+    realism_profile: RealismProfile = "standard"
     audio_mode: AudioMode = "native"
     audio_direction: str | None = Field(default=None, max_length=1200)
     provider: VideoProviderName | None = None
@@ -126,6 +128,8 @@ class VideoGenerationResponse(BaseModel):
     model: str
     quality: RenderQuality
     quality_note: str
+    realism_profile: RealismProfile = "standard"
+    detail_refined: bool = False
     audio_mode: AudioMode = "native"
     chunk_count: int = 1
     gpu: str | None = None
@@ -159,6 +163,7 @@ class FullVideoGenerationRequest(BaseModel):
     decoder: DecoderName = "conv"
     enhance_prompt: bool = False
     quality: RenderQuality = "preview"
+    realism_profile: RealismProfile = "standard"
     audio_mode: AudioMode = "native"
     audio_direction: str | None = Field(default=None, max_length=1200)
     provider: VideoProviderName | None = None
@@ -186,6 +191,8 @@ class FullVideoGenerationResponse(BaseModel):
     model: str
     quality: RenderQuality
     quality_note: str
+    realism_profile: RealismProfile = "standard"
+    detail_refined: bool = False
     audio_mode: AudioMode = "native"
     gpu: str | None = None
     media_info: MediaInfo
@@ -218,6 +225,7 @@ class GenerationCapabilitiesResponse(BaseModel):
     qualities: list[dict]
     aspect_ratios: list[AspectRatio]
     decoders: list[DecoderName]
+    realism_profiles: list[dict]
     continuity_modes: list[ContinuityMode]
     audio_modes: list[AudioMode]
     image_conditioning: bool

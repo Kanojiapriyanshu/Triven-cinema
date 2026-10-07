@@ -5,7 +5,7 @@ def source_render_dimensions(aspect_ratio: str, quality: str = "preview") -> tup
     """LTX target dimensions aligned to the active render pipeline.
 
     Preview stays inexpensive. Final-quality Modal jobs use DFR at a true
-    production canvas: 1920x1088 for 1080-class output and the LTX v1.3.0
+    production canvas: 1920x1088 for 1080-class output and the LTX v1.4.2
     4K grid (3840x2176) for UHD delivery before the final 16:9 crop.
     """
     if quality == "4k":

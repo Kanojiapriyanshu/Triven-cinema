@@ -27,7 +27,7 @@ Triven Cinema is an AI video factory: prompt input, continuity-locked storyboard
 - Per-workspace encrypted YouTube OAuth connection and resumable final-master uploads.
 - Final MP4 preview and download.
 - Render timing metrics and optional GPU cost estimates.
-- Seed, decoder and prompt-enhancement controls in the UI.
+- Seed, preview-decoder, prompt-enhancement and production realism controls in the UI.
 - Modal GPU benchmark script and required-aspect-ratio smoke test.
 - Docker deployment baseline for the Next.js/FastAPI application layer.
 
@@ -93,6 +93,23 @@ TRIVEN_MODAL_GPU="B200"
 ```
 
 The web UI now defaults to Modal production but still allows ZeroGPU development fallback.
+
+
+## Real Skin / Identity Max production path
+
+Final-quality Cinema Studio renders now expose three realism profiles:
+
+- `Standard`: existing LTX production path without the extra refinement pass.
+- `Real Skin` (Studio default): DFR for normal scenes, or Ingredients IC-LoRA when reusable identity Elements are active, with the diffusion video VAE, followed by Lightricks' official `LTX-2.5-22b-IC-LoRA-Refine-Details` tiled video-to-video pass. The refiner is prompted only for photographic texture/skin/hair/fabric detail so it does not rewrite the user's scene prompt.
+- `Identity Max`: the same Real Skin final path, intended to be used with a Character Element in `Identity` mode. Make a sharp real photograph the Element's primary/canonical reference and add supporting angles when available.
+
+The Refine Details adapter is not trained for audio generation. Triven therefore refines the picture, then remuxes the untouched audio stream from the original LTX scene so speech timing and synchronized sound are not replaced by the texture pass. Preview renders skip this expensive second pass.
+
+Important: the official DFR pipeline still expects the **distilled** LTX-2.5 transformer; do not replace it with the full/dev transformer. The full/dev checkpoint is for other guided pipelines, not DFR.
+
+The Refine Details repository is gated separately on Hugging Face. Before running `./scripts/setup_modal.sh`, accept access for both LTX-2.5 and `Lightricks/LTX-2.5-22b-IC-LoRA-Refine-Details`. The setup command downloads the refiner into the existing persistent Modal model volume.
+
+The application does not claim a numeric face-match guarantee. Generative identity can still drift because of pose, occlusion, lighting, motion and reference quality; Identity Max is the strongest supported path, not a biometric guarantee.
 
 ## Native audio verification
 

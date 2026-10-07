@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     modal_app_name: str = "triven-cinema-ltx"
     modal_function_name: str = "generate_video"
     triven_modal_gpu: str = "B200"
-    triven_ltx_repo_ref: str = "v1.3.0"
+    triven_ltx_repo_ref: str = "v1.4.2"
 
     # Keep these at 0 until you copy the current hourly rates from Modal.
     # They are used only for explicit cost estimates, never presented as billed cost.

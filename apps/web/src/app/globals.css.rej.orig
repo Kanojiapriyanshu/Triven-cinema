@@ -1,0 +1,28 @@
+@@ -1401,6 +1401,11 @@
+   color: var(--text-strong);
+ }
+ 
++.studio-sidebar-new-chat {
++  color: var(--text-strong);
++  font-weight: 600;
++}
++
+ .studio-sidebar-action > svg,
+ .studio-chat-history-icon > svg {
+   flex: 0 0 auto;
+@@ -1482,7 +1487,6 @@
+ }
+ 
+ .studio-chat-history-row-active .studio-chat-open {
+-  padding-right: .58rem;
+   color: var(--text-strong);
+ }
+ 
+@@ -1527,6 +1531,7 @@
+ }
+ 
+ .studio-chat-history-row:hover .studio-chat-delete,
++.studio-chat-history-row-active .studio-chat-delete,
+ .studio-chat-delete:focus-visible {
+   opacity: .8;
+ }

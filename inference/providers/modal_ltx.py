@@ -52,6 +52,7 @@ class ModalLTXProvider(VideoProvider):
         reference_strength: float = 0.95,
         element_reference_sheet_path: str | None = None,
         element_reference_strength: float = 1.0,
+        realism_profile: str = "standard",
     ) -> VideoGenerationResult:
         started = time.perf_counter()
 
@@ -87,6 +88,7 @@ class ModalLTXProvider(VideoProvider):
                 reference_strength=float(reference_strength),
                 element_reference_sheet_bytes=element_reference_sheet_bytes,
                 element_reference_strength=float(element_reference_strength),
+                realism_profile=realism_profile,
             )
         except Exception as exc:
             LOGGER.exception(
@@ -121,6 +123,8 @@ class ModalLTXProvider(VideoProvider):
             reference_conditioned=bool(result.get("reference_conditioned", False)),
             chunk_count=max(1, int(result.get("chunk_count") or 1)),
             render_mode=str(result.get("render_mode") or render_mode),
+            realism_profile=str(result.get("realism_profile") or realism_profile),
+            detail_refined=bool(result.get("detail_refined", False)),
         )
 
     def retake_audio(

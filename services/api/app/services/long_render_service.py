@@ -61,6 +61,7 @@ def render_long_clip(
     reference_strength: float = 0.95,
     element_reference_sheet_path: str | None = None,
     element_reference_strength: float = 1.0,
+    realism_profile: str = "standard",
     progress: ProgressCallback | None = None,
 ) -> VideoGenerationResult:
     """Render a customer-facing long clip with the safest provider strategy.
@@ -85,6 +86,7 @@ def render_long_clip(
             reference_strength=reference_strength,
             element_reference_sheet_path=element_reference_sheet_path,
             element_reference_strength=element_reference_strength,
+            realism_profile=realism_profile,
         )
 
     chunks = split_duration(duration_seconds)
@@ -122,6 +124,7 @@ def render_long_clip(
                 reference_strength=reference_strength,
                 element_reference_sheet_path=element_reference_sheet_path,
                 element_reference_strength=element_reference_strength,
+                realism_profile=realism_profile,
             )
             last_result = result
             path = Path(result.path)
@@ -156,6 +159,8 @@ def render_long_clip(
                 reference_conditioned=any_conditioned,
                 chunk_count=1,
                 render_mode=last_result.render_mode,
+                realism_profile=last_result.realism_profile,
+                detail_refined=last_result.detail_refined,
             )
 
         combined = GENERATED_DIR / f"ltx-long-{uuid.uuid4().hex}.mp4"
@@ -180,6 +185,8 @@ def render_long_clip(
             reference_conditioned=any_conditioned,
             chunk_count=len(chunks),
             render_mode=last_result.render_mode,
+            realism_profile=last_result.realism_profile,
+            detail_refined=last_result.detail_refined,
         )
     finally:
         for frame in temporary_frames:

@@ -6,6 +6,7 @@ from models import (
     AUDIO_VAE,
     DETAILING_LORA,
     INGREDIENTS_LORA,
+    REFINE_DETAILS_LORA,
     SPATIAL_UPSCALER,
     TEXT_ENCODER,
     TRANSFORMER,
@@ -229,6 +230,106 @@ def build_command(
 
     return command
 
+
+
+# The first-party LTX 2.5 Refine Details adapter is deliberately prompted with
+# rendering/texture language only. The official tiled workflow warns against
+# subject-specific prompts because every tile sees the prompt independently.
+REALISM_DETAIL_PROMPT = (
+    "native high-resolution photographic capture, natural human skin microtexture where skin is visible, "
+    "fine pores and vellus hair, crisp eyelashes and hair strands, realistic fabric fibers, subtle tonal variation, "
+    "clean edges, sharp photographic detail, natural grain, true-to-life texture; preserve identity, composition, "
+    "lighting, color, pose, camera geometry and motion exactly"
+)
+REFINE_TILE_HEIGHT = 576
+REFINE_TILE_WIDTH = 1024
+
+
+def build_refine_details_command(
+    *,
+    input_video_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    duration_seconds: float,
+    seed: int,
+) -> list[str]:
+    """Build the official LTX-2.5 Refine Details second-pass command.
+
+    The adapter is video-to-video and is not trained for audio. Triven therefore
+    refines only the picture here and remuxes the untouched source audio afterward.
+    Spatial tiling is always enabled, matching Lightricks' recommendation even at
+    1080-class output. Long scenes use the same 97-frame streaming window used by
+    the upstream IC-LoRA pipeline.
+    """
+    command = [
+        "uv", "run", "python", "-m", "ltx_pipelines.ic_lora",
+        "--transformer-path", str(TRANSFORMER),
+        "--text-encoder-path", str(TEXT_ENCODER),
+        "--video-vae-path", str(VIDEO_VAE_DIFFUSION),
+        "--audio-vae-path", str(AUDIO_VAE),
+        "--spatial-upsampler-path", str(SPATIAL_UPSCALER),
+        "--width", str(width),
+        "--height", str(height),
+        "--num-frames", str(frames_for_duration(duration_seconds)),
+        "--seed", str(seed),
+        "--quantization", "fp8-cast",
+        "--output-path", str(output_path),
+        "--prompt", REALISM_DETAIL_PROMPT,
+        "--lora", str(REFINE_DETAILS_LORA), "1.000",
+        "--video-conditioning", str(input_video_path), "1.000",
+        "--tile",
+        "--tile-height", str(REFINE_TILE_HEIGHT),
+        "--tile-width", str(REFINE_TILE_WIDTH),
+        "--stage-2-ic-lora",
+    ]
+    # 97-frame guide windows are the upstream recommendation for long clips.
+    # Short clips can stay a single temporal extent.
+    if frames_for_duration(duration_seconds) > 240:
+        command.extend(
+            [
+                "--chunk-pixel-frames", str(LONG_VIDEO_PIXEL_FRAMES),
+                "--chunk-carry-frames", str(LONG_VIDEO_CARRY_FRAMES),
+            ]
+        )
+    return command
+
+
+def build_preserve_source_audio_command(
+    *,
+    refined_video_path: Path,
+    source_video_path: Path,
+    output_path: Path,
+) -> list[str]:
+    """Keep the refined picture but bit-copy the original generated audio."""
+    return [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", str(refined_video_path),
+        "-i", str(source_video_path),
+        "-map", "0:v:0",
+        "-map", "1:a:0?",
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-shortest",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+
+
+def preserve_source_audio(
+    *,
+    refined_video_path: Path,
+    source_video_path: Path,
+    output_path: Path,
+) -> None:
+    command = build_preserve_source_audio_command(
+        refined_video_path=refined_video_path,
+        source_video_path=source_video_path,
+        output_path=output_path,
+    )
+    process = subprocess.run(command, capture_output=True, text=True)
+    if process.returncode != 0 or not output_path.exists():
+        raise RuntimeError("Unable to preserve source audio after detail refinement: " + process.stderr[-2000:])
 
 def run_ltx_command(command: list[str]) -> None:
     process = subprocess.run(

@@ -17,6 +17,8 @@ class VideoGenerationResult:
     reference_conditioned: bool = False
     chunk_count: int = 1
     render_mode: str = "distilled"
+    realism_profile: str = "standard"
+    detail_refined: bool = False
 
 
 class VideoProvider(ABC):
@@ -39,6 +41,7 @@ class VideoProvider(ABC):
         reference_strength: float = 0.95,
         element_reference_sheet_path: str | None = None,
         element_reference_strength: float = 1.0,
+        realism_profile: str = "standard",
     ) -> VideoGenerationResult:
         raise NotImplementedError
 

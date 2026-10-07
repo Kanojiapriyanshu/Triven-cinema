@@ -12,7 +12,7 @@ def retake_audio_only(
 ) -> None:
     """Use LTX RetakePipeline to regenerate audio while freezing video.
 
-    This helper is intentionally tied to the pinned LTX v1.3.0 API used by the
+    This helper is intentionally tied to the pinned LTX v1.4.2 API used by the
     Modal image. Keep the repo pin and this helper in sync when upgrading LTX.
     """
     import torch

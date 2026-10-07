@@ -10,6 +10,7 @@ from app.schemas.generation import (
     EntityLock,
     DecoderName,
     RenderQuality,
+    RealismProfile,
     VideoModelName,
     VideoProviderName,
 )
@@ -23,6 +24,7 @@ class FactoryGenerationRequest(BaseModel):
     scene_duration_seconds: float = Field(default=20.0, ge=15.0, le=30.0)
     aspect_ratio: AspectRatio = "16:9"
     quality: RenderQuality = "1080p"
+    realism_profile: RealismProfile = "real_skin"
     audio_mode: AudioMode = "mastered"
     audio_direction: str | None = Field(default=None, max_length=1200)
     provider: VideoProviderName = "modal"
@@ -68,6 +70,8 @@ class FactoryGenerationResponse(BaseModel):
     aspect_ratio: AspectRatio
     quality: RenderQuality
     quality_note: str
+    realism_profile: RealismProfile = "real_skin"
+    detail_refined: bool = False
     audio_mode: AudioMode
     has_audio: bool
     width: int | None = None

@@ -42,6 +42,7 @@ import type {
   GenerationMode,
   RenderedSceneVideo,
   RenderQuality,
+  RealismProfile,
   ScenePlanResponse,
   VideoModelName,
   VideoProviderName,
@@ -74,6 +75,158 @@ type FinalVideo = {
   youtubeUrl?: string | null;
   youtubePrivacy?: string | null;
 } | null;
+
+type StudioChatWorkspace = {
+  prompt: string;
+  mode: GenerationMode;
+  aspectRatio: AspectRatio;
+  sceneCount: number;
+  durationSeconds: number;
+  factoryTargetSeconds: number;
+  factorySceneSeconds: number;
+  quality: RenderQuality;
+  audioMode: AudioMode;
+  audioDirection: string;
+  decoder: DecoderName;
+  realismProfile: RealismProfile;
+  seed: number;
+  enhancePrompt: boolean;
+  continuityMode: ContinuityMode;
+  cameraMove: CameraMove;
+  lensPreset: LensPreset;
+  shotSize: ShotSize;
+  genrePreset: GenrePreset;
+  colorPreset: ColorPreset;
+  tempoPreset: TempoPreset;
+  selectedElementId: string | null;
+  elementModes: Record<string, ElementReferenceMode>;
+  elementApplyAll: Record<string, boolean>;
+  elementStrengths: Record<string, number>;
+  result: ScenePlanResponse | null;
+  scenePrompts: ScenePromptMap;
+  renderedVideos: RenderedVideoMap;
+  factoryResult: FactoryGenerationResponse | null;
+  finalVideo: FinalVideo;
+};
+
+type StudioChatSession = {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  workspace: StudioChatWorkspace;
+};
+
+const CHAT_HISTORY_STORAGE_KEY = "triven-cinema-chat-history-v1";
+const DEFAULT_AUDIO_DIRECTION = "Natural synchronized ambience and Foley matching every visible action.";
+
+function createEmptyChatWorkspace(): StudioChatWorkspace {
+  return {
+    prompt: "",
+    mode: "factory",
+    aspectRatio: "16:9",
+    sceneCount: 2,
+    durationSeconds: 15,
+    factoryTargetSeconds: 30,
+    factorySceneSeconds: 20,
+    quality: "1080p",
+    audioMode: "mastered",
+    audioDirection: DEFAULT_AUDIO_DIRECTION,
+    decoder: "conv",
+    realismProfile: "real_skin",
+    seed: 42,
+    enhancePrompt: false,
+    continuityMode: "strict",
+    cameraMove: "auto",
+    lensPreset: "auto",
+    shotSize: "auto",
+    genrePreset: "auto",
+    colorPreset: "auto",
+    tempoPreset: "auto",
+    selectedElementId: null,
+    elementModes: {},
+    elementApplyAll: {},
+    elementStrengths: {},
+    result: null,
+    scenePrompts: {},
+    renderedVideos: {},
+    factoryResult: null,
+    finalVideo: null,
+  };
+}
+
+function normalizeChatWorkspace(value: Partial<StudioChatWorkspace> | null | undefined): StudioChatWorkspace {
+  const empty = createEmptyChatWorkspace();
+  return {
+    ...empty,
+    ...(value || {}),
+    elementModes: value?.elementModes || {},
+    elementApplyAll: value?.elementApplyAll || {},
+    elementStrengths: value?.elementStrengths || {},
+    scenePrompts: value?.scenePrompts || {},
+    renderedVideos: value?.renderedVideos || {},
+  };
+}
+
+function chatTitleFromPrompt(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return "New chat";
+  return normalized.length > 38 ? `${normalized.slice(0, 38).trimEnd()}…` : normalized;
+}
+
+function createChatId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `chat-${crypto.randomUUID()}`;
+  }
+  return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function createChatSession(workspace = createEmptyChatWorkspace()): StudioChatSession {
+  const now = Date.now();
+  return {
+    id: createChatId(),
+    title: chatTitleFromPrompt(workspace.prompt),
+    createdAt: now,
+    updatedAt: now,
+    workspace,
+  };
+}
+
+function readStoredChatSessions() {
+  if (typeof window === "undefined") return [] as StudioChatSession[];
+  try {
+    const raw = window.localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+    if (!raw) return [] as StudioChatSession[];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [] as StudioChatSession[];
+    return parsed
+      .filter((entry): entry is StudioChatSession => Boolean(
+        entry &&
+        typeof entry === "object" &&
+        "id" in entry && typeof entry.id === "string" &&
+        "workspace" in entry && entry.workspace && typeof entry.workspace === "object"
+      ))
+      .map((entry) => ({
+        ...entry,
+        title: typeof entry.title === "string" && entry.title.trim() ? entry.title : chatTitleFromPrompt((entry.workspace as StudioChatWorkspace).prompt || ""),
+        createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+        updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+        workspace: normalizeChatWorkspace(entry.workspace),
+      }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return [] as StudioChatSession[];
+  }
+}
+
+function persistChatSessions(sessions: StudioChatSession[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(sessions));
+  } catch {
+    // A full localStorage should never break the actual Cinema generation flow.
+  }
+}
 
 const DURATION_OPTIONS: Record<RenderQuality, number[]> = {
   preview: [5, 10, 15, 20],
@@ -151,8 +304,8 @@ function MoonIcon() {
   );
 }
 
-function GridIcon() {
-  return <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.6"/><rect x="14" y="4" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.6"/><rect x="4" y="14" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.6"/><rect x="14" y="14" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.6"/></svg>;
+function NewChatIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true"><path d="M13.5 5H6.8A2.8 2.8 0 0 0 4 7.8v9.4A2.8 2.8 0 0 0 6.8 20h9.4a2.8 2.8 0 0 0 2.8-2.8v-6.7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><path d="m11 13 1.1-3.25L18.35 3.5a1.52 1.52 0 0 1 2.15 2.15l-6.25 6.25L11 13Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
 function ElementsIcon() {
@@ -163,12 +316,16 @@ function FilmIcon() {
   return <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.2" stroke="currentColor" strokeWidth="1.6"/><path d="M8 5v14M16 5v14M3.5 9h4.5M3.5 15h4.5M16 9h4.5M16 15h4.5" stroke="currentColor" strokeWidth="1.35"/></svg>;
 }
 
-function SparkIcon() {
-  return <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true"><path d="M12 3.5c.7 4.4 2.1 5.8 6.5 6.5-4.4.7-5.8 2.1-6.5 6.5-.7-4.4-2.1-5.8-6.5-6.5 4.4-.7 5.8-2.1 6.5-6.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><path d="M18.5 15.5c.25 1.65.85 2.25 2.5 2.5-1.65.25-2.25.85-2.5 2.5-.25-1.65-.85-2.25-2.5-2.5 1.65-.25 2.25-.85 2.5-2.5Z" fill="currentColor"/></svg>;
-}
-
 function PlusIcon() {
   return <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>;
+}
+
+function ChatIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true"><path d="M20 11.5a7.2 7.2 0 0 1-7.5 7.2 8 8 0 0 1-3.2-.65L5 19.5l1.35-3.65A7 7 0 0 1 5 11.5a7.2 7.2 0 0 1 7.5-7.2A7.2 7.2 0 0 1 20 11.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+
+function TrashIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5" aria-hidden="true"><path d="M4.5 7h15M9 7V4.8h6V7m-8.5 0 .7 12h9.6l.7-12M10 10.5v5M14 10.5v5" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
 function aspectClass(aspectRatio: AspectRatio) {
@@ -237,10 +394,11 @@ export default function Home() {
   const [factorySceneSeconds, setFactorySceneSeconds] = useState(20);
   const [quality, setQuality] = useState<RenderQuality>("1080p");
   const [audioMode, setAudioMode] = useState<AudioMode>("mastered");
-  const [audioDirection, setAudioDirection] = useState("Natural synchronized ambience and Foley matching every visible action.");
+  const [audioDirection, setAudioDirection] = useState(DEFAULT_AUDIO_DIRECTION);
   const provider: VideoProviderName = "modal";
   const model: VideoModelName = "ltx-2.5";
   const [decoder, setDecoder] = useState<DecoderName>("conv");
+  const [realismProfile, setRealismProfile] = useState<RealismProfile>("real_skin");
   const [seed, setSeed] = useState(42);
   const [enhancePrompt, setEnhancePrompt] = useState(false);
   const [continuityMode, setContinuityMode] = useState<ContinuityMode>("strict");
@@ -256,6 +414,9 @@ export default function Home() {
   const [tempoPreset, setTempoPreset] = useState<TempoPreset>("auto");
   const [showReferencePicker, setShowReferencePicker] = useState(false);
   const [showElementsLibrary, setShowElementsLibrary] = useState(false);
+  const [chatSessions, setChatSessions] = useState<StudioChatSession[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [chatHistoryReady, setChatHistoryReady] = useState(false);
 
   const [elements, setElements] = useState<CinemaElement[]>([]);
   const [elementsLoading, setElementsLoading] = useState(false);
@@ -354,6 +515,14 @@ export default function Home() {
     return values.length ? values[values.length - 1] : null;
   }, [renderedVideos]);
   const studioVideoUrl = finalVideo?.url || latestRenderedVideo?.url || null;
+  const sortedChatSessions = useMemo(
+    () => [...chatSessions].sort((a, b) => b.updatedAt - a.updatedAt),
+    [chatSessions]
+  );
+  const activeChatTitle = useMemo(
+    () => chatSessions.find((session) => session.id === activeChatId)?.title || chatTitleFromPrompt(prompt),
+    [chatSessions, activeChatId, prompt]
+  );
 
   useEffect(() => {
     const storedTheme = window.localStorage.getItem("triven-cinema-theme");
@@ -371,6 +540,118 @@ export default function Home() {
     document.documentElement.dataset.theme = nextTheme;
     window.localStorage.setItem("triven-cinema-theme", nextTheme);
   }
+
+  useEffect(() => {
+    // A page visit always starts as a fresh, unsaved draft. Existing chats remain
+    // available in history but none is auto-selected or restored on load.
+    const stored = readStoredChatSessions();
+    setChatSessions(stored);
+    setActiveChatId(null);
+    persistChatSessions(stored);
+    setChatHistoryReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!chatHistoryReady) return;
+    const workspace: StudioChatWorkspace = {
+      prompt,
+      mode,
+      aspectRatio,
+      sceneCount,
+      durationSeconds,
+      factoryTargetSeconds,
+      factorySceneSeconds,
+      quality,
+      audioMode,
+      audioDirection,
+      decoder,
+      realismProfile,
+      seed,
+      enhancePrompt,
+      continuityMode,
+      cameraMove,
+      lensPreset,
+      shotSize,
+      genrePreset,
+      colorPreset,
+      tempoPreset,
+      selectedElementId,
+      elementModes,
+      elementApplyAll,
+      elementStrengths,
+      result,
+      scenePrompts,
+      renderedVideos,
+      factoryResult,
+      finalVideo,
+    };
+
+    // Do not put a blank landing-state chat into history. The draft becomes a
+    // real chat as soon as the creator starts writing a prompt.
+    if (!activeChatId) {
+      if (!prompt.trim()) return;
+      const session = createChatSession(workspace);
+      setActiveChatId(session.id);
+      setChatSessions((current) => {
+        const sorted = [session, ...current].sort((a, b) => b.updatedAt - a.updatedAt);
+        persistChatSessions(sorted);
+        return sorted;
+      });
+      return;
+    }
+
+    setChatSessions((current) => {
+      const now = Date.now();
+      let found = false;
+      const next = current.map((session) => {
+        if (session.id !== activeChatId) return session;
+        found = true;
+        return {
+          ...session,
+          title: prompt.trim() ? chatTitleFromPrompt(prompt) : session.title,
+          updatedAt: now,
+          workspace,
+        };
+      });
+      if (!found) return current;
+      const sorted = next.sort((a, b) => b.updatedAt - a.updatedAt);
+      persistChatSessions(sorted);
+      return sorted;
+    });
+  }, [
+    chatHistoryReady,
+    activeChatId,
+    prompt,
+    mode,
+    aspectRatio,
+    sceneCount,
+    durationSeconds,
+    factoryTargetSeconds,
+    factorySceneSeconds,
+    quality,
+    audioMode,
+    audioDirection,
+    decoder,
+    realismProfile,
+    seed,
+    enhancePrompt,
+    continuityMode,
+    cameraMove,
+    lensPreset,
+    shotSize,
+    genrePreset,
+    colorPreset,
+    tempoPreset,
+    selectedElementId,
+    elementModes,
+    elementApplyAll,
+    elementStrengths,
+    result,
+    scenePrompts,
+    renderedVideos,
+    factoryResult,
+    finalVideo,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -420,6 +701,85 @@ export default function Home() {
     void bootstrap();
     return () => { active = false; };
   }, []);
+
+  function applyChatWorkspace(rawWorkspace: StudioChatWorkspace) {
+    const workspace = normalizeChatWorkspace(rawWorkspace);
+    setPrompt(workspace.prompt);
+    setMode(workspace.mode);
+    setAspectRatio(workspace.aspectRatio);
+    setSceneCount(workspace.sceneCount);
+    setDurationSeconds(workspace.durationSeconds);
+    setFactoryTargetSeconds(workspace.factoryTargetSeconds);
+    setFactorySceneSeconds(workspace.factorySceneSeconds);
+    setQuality(workspace.quality);
+    setAudioMode(workspace.audioMode);
+    setAudioDirection(workspace.audioDirection);
+    setDecoder(workspace.decoder);
+    setRealismProfile(workspace.realismProfile);
+    setSeed(workspace.seed);
+    setEnhancePrompt(workspace.enhancePrompt);
+    setContinuityMode(workspace.continuityMode);
+    setCameraMove(workspace.cameraMove);
+    setLensPreset(workspace.lensPreset);
+    setShotSize(workspace.shotSize);
+    setGenrePreset(workspace.genrePreset);
+    setColorPreset(workspace.colorPreset);
+    setTempoPreset(workspace.tempoPreset);
+    setSelectedElementId(workspace.selectedElementId);
+    setElementModes(workspace.elementModes);
+    setElementApplyAll(workspace.elementApplyAll);
+    setElementStrengths(workspace.elementStrengths);
+    setResult(workspace.result);
+    setScenePrompts(workspace.scenePrompts);
+    setRenderedVideos(workspace.renderedVideos);
+    setFactoryResult(workspace.factoryResult);
+    setFinalVideo(workspace.finalVideo);
+    setEditingScene(null);
+    setProgressMessage("");
+    setError("");
+    setNotice("");
+    setMentionQuery(null);
+    setShowReferencePicker(false);
+    setShowElementsLibrary(false);
+    setDirectorTab("scene");
+  }
+
+  function handleNewChat() {
+    if (isBusy) {
+      setNotice("Wait for the current render to finish before starting a new chat.");
+      return;
+    }
+
+    // The active chat is already kept in chatSessions by the workspace sync effect.
+    // New Chat only switches the UI to a fresh unsaved draft; it will not appear in
+    // Previous chats until the creator starts typing a prompt.
+    persistChatSessions(chatSessions);
+    setActiveChatId(null);
+    applyChatWorkspace(createEmptyChatWorkspace());
+  }
+
+  function handleOpenChat(session: StudioChatSession) {
+    if (session.id === activeChatId) return;
+    if (isBusy) {
+      setNotice("Wait for the current render to finish before switching chats.");
+      return;
+    }
+    setActiveChatId(session.id);
+    applyChatWorkspace(session.workspace);
+    persistChatSessions(chatSessions);
+  }
+
+  function handleDeleteChat(chatId: string) {
+    // The current working chat is intentionally protected from deletion.
+    if (chatId === activeChatId) return;
+    const target = chatSessions.find((session) => session.id === chatId);
+    if (!target) return;
+    if (!window.confirm(`Delete “${target.title}” from chat history? Rendered media files will not be deleted.`)) return;
+
+    const remaining = chatSessions.filter((session) => session.id !== chatId);
+    setChatSessions(remaining);
+    persistChatSessions(remaining);
+  }
 
   function handleQualityChange(nextQuality: RenderQuality) {
     setQuality(nextQuality);
@@ -611,7 +971,7 @@ export default function Home() {
       downloadUrl: absoluteApiUrl(response.download_url),
       filename: response.filename,
       qualityNote: response.quality_note,
-      label: `${response.provider} · ${response.chunk_count} LTX chunk${response.chunk_count === 1 ? "" : "s"} · ${response.render_seconds.toFixed(1)}s render`,
+      label: `${response.provider} · ${response.chunk_count} LTX chunk${response.chunk_count === 1 ? "" : "s"} · ${response.render_seconds.toFixed(1)}s render${response.detail_refined ? " · Real Skin refined" : ""}`,
       hasAudio: response.media_info.has_audio,
       audioCodec: response.media_info.audio_codec,
       dimensions: `${response.media_info.width ?? "?"}×${response.media_info.height ?? "?"}`,
@@ -633,6 +993,7 @@ export default function Home() {
         scene_duration_seconds: factorySceneSeconds,
         aspect_ratio: aspectRatio,
         quality,
+        realism_profile: realismProfile,
         audio_mode: audioMode,
         audio_direction: audioDirection.trim() || null,
         provider,
@@ -660,7 +1021,7 @@ export default function Home() {
         downloadUrl: absoluteApiUrl(response.final_download_url),
         filename: response.final_filename,
         qualityNote: response.quality_note,
-        label: `${response.scene_count} scenes · ${response.chunk_count} LTX chunks · ${response.provider} · ${response.total_render_seconds.toFixed(1)}s GPU render`,
+        label: `${response.scene_count} scenes · ${response.chunk_count} LTX chunks · ${response.provider} · ${response.total_render_seconds.toFixed(1)}s GPU render${response.detail_refined ? " · Real Skin refined" : ""}`,
         hasAudio: response.has_audio,
         audioCodec: response.has_audio ? "AAC / generated audio" : null,
         dimensions: `${response.width ?? "?"}×${response.height ?? "?"}`,
@@ -687,6 +1048,10 @@ export default function Home() {
       setError(`This LTX profile allows ${activeElementLimit} active Elements in one scene. Remove ${referencedElements.length - activeElementLimit} reference${referencedElements.length - activeElementLimit === 1 ? "" : "s"} before generating.`);
       return;
     }
+    if (realismProfile === "identity_max" && !referencedElements.some((element) => element.type === "character" && (elementModes[element.id] || "identity") === "identity")) {
+      setError("Identity Max needs an active Character Element in Identity mode. Add @your-character or enable it across Factory scenes, then use a sharp real photo as the primary reference.");
+      return;
+    }
     setError("");
     setNotice("");
     resetOutput();
@@ -708,6 +1073,7 @@ export default function Home() {
           decoder,
           enhance_prompt: enhancePrompt,
           quality,
+          realism_profile: realismProfile,
           audio_mode: audioMode,
           audio_direction: audioDirection.trim() || null,
           provider,
@@ -750,6 +1116,7 @@ export default function Home() {
       decoder,
       enhance_prompt: false,
       quality,
+      realism_profile: realismProfile,
       audio_mode: "native",
       audio_direction: audioDirection.trim() || null,
       provider,
@@ -780,6 +1147,8 @@ export default function Home() {
       mediaInfo: response.media_info,
       estimatedCostUsd: response.estimated_cost_usd,
       qualityNote: response.quality_note,
+      realismProfile: response.realism_profile,
+      detailRefined: response.detail_refined,
       audioMode: response.audio_mode,
       chunkCount: response.chunk_count,
       continuityMode: response.continuity_mode,
@@ -924,7 +1293,7 @@ export default function Home() {
           <div className="studio-logo-mark">T</div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="truncate text-sm font-semibold text-[var(--text-strong)]">Untitled project</span>
+              <span className="truncate text-sm font-semibold text-[var(--text-strong)]">{activeChatTitle}</span>
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" title="Saved locally" />
             </div>
             <div className="text-[10px] text-[var(--text-muted)]">Triven Cinema Studio</div>
@@ -951,21 +1320,43 @@ export default function Home() {
       </header>
 
       <div className="studio-workspace">
-        <nav className="studio-sidebar" aria-label="Cinema Studio navigation">
-          <button type="button" className="studio-nav-item studio-nav-item-active" onClick={() => { setShowElementsLibrary(false); setDirectorTab("scene"); }} title="Create">
-            <SparkIcon /><span>Create</span>
-          </button>
-          <button type="button" className="studio-nav-item" onClick={() => setShowElementsLibrary(true)} title="My Elements">
-            <ElementsIcon /><span>Elements</span>
-          </button>
-          <button type="button" className="studio-nav-item" onClick={() => document.getElementById("studio-output")?.scrollIntoView({ behavior: "smooth" })} title="Generations">
-            <FilmIcon /><span>Takes</span>
-          </button>
-          <div className="studio-nav-spacer" />
-          <button type="button" className="studio-nav-item" onClick={() => setDirectorTab("scene")} title="Production settings">
-            <GridIcon /><span>Setup</span>
-          </button>
-        </nav>
+        <aside className="studio-sidebar" aria-label="Cinema Studio navigation">
+          <div className="studio-sidebar-actions">
+            <button type="button" className="studio-sidebar-action" onClick={handleNewChat} disabled={isBusy} title="Start a new chat">
+              <NewChatIcon /><span>New Chat</span>
+            </button>
+            <button type="button" className={`studio-sidebar-action ${showElementsLibrary ? "studio-sidebar-action-active" : ""}`} onClick={() => setShowElementsLibrary(true)} title="My Elements">
+              <ElementsIcon /><span>Elements</span>
+            </button>
+            <button type="button" className="studio-sidebar-action" onClick={() => document.getElementById("studio-output")?.scrollIntoView({ behavior: "smooth", block: "start" })} title="Generation tasks and outputs">
+              <FilmIcon /><span>Tasks</span>
+            </button>
+          </div>
+
+          <div className="studio-sidebar-divider" />
+
+          <div className="studio-chat-history">
+            <div className="studio-chat-history-title">Previous chats</div>
+            <div className="studio-chat-history-list" role="list" aria-label="Previous Cinema chats">
+              {sortedChatSessions.map((session) => {
+                const active = session.id === activeChatId;
+                return (
+                  <div key={session.id} className={`studio-chat-history-row ${active ? "studio-chat-history-row-active" : ""}`} role="listitem">
+                    <button type="button" className="studio-chat-open" onClick={() => handleOpenChat(session)} disabled={isBusy && !active} aria-current={active ? "page" : undefined} title={session.title}>
+                      <span className="studio-chat-history-icon"><ChatIcon /></span>
+                      <span className="studio-chat-history-name">{session.title}</span>
+                    </button>
+                    {!active ? (
+                      <button type="button" className="studio-chat-delete" onClick={() => handleDeleteChat(session.id)} aria-label={`Delete ${session.title}`} title="Delete chat">
+                        <TrashIcon />
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </aside>
 
         <section className="studio-main-column">
           <div className="studio-stage-shell">
@@ -1214,6 +1605,8 @@ export default function Home() {
                       <label className="studio-check-row"><input type="checkbox" checked={Boolean(elementApplyAll[selectedElement.id])} onChange={(e) => setElementApplyAll((current) => ({ ...current, [selectedElement.id]: e.target.checked }))} /><span>Keep this Element active across all Factory scenes</span></label>
                     </div>
 
+                    {selectedElement.type === "character" && <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--panel-subtle)] px-3 py-2 text-[10px] leading-5 text-[var(--text-muted)]">For the strongest face match, make the primary reference a sharp real photo with natural skin texture, neutral lighting and a clearly visible face. Supporting angles can be added beside it.</div>}
+
                     <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
                       {selectedElement.assets.map((reference) => (
                         <button key={reference.id} type="button" onClick={() => void handleSetPrimaryElementAsset(selectedElement, reference.id)} className={`studio-asset-thumb ${reference.id === selectedElement.primary_asset_id ? "studio-asset-thumb-active" : ""}`} title="Set as canonical reference">
@@ -1247,12 +1640,16 @@ export default function Home() {
                   ) : null}
                   <Control label="Audio"><select className="studio-inspector-control" value={audioMode} onChange={(e) => setAudioMode(e.target.value as AudioMode)}><option value="mastered">Generated + mastered</option><option value="native">Native LTX audio</option><option value="mute">Mute final video</option></select></Control>
                   <Control label="Continuity"><select className="studio-inspector-control" value={continuityMode} onChange={(e) => setContinuityMode(e.target.value as ContinuityMode)}><option value="strict">Strict · identity + image</option><option value="balanced">Balanced · identity</option><option value="off">Off</option></select></Control>
+                  <Control label="Realism"><select className="studio-inspector-control" value={realismProfile} onChange={(e) => setRealismProfile(e.target.value as RealismProfile)}><option value="real_skin">Real Skin · recommended</option><option value="identity_max">Identity Max · use Character Element</option><option value="standard">Standard · faster</option></select></Control>
+                  <div className="studio-advanced-card text-[10px] leading-5 text-[var(--text-muted)]">
+                    {realismProfile === "standard" ? "Standard keeps the normal production render without the extra detail pass." : realismProfile === "identity_max" ? "Identity Max layers the Real Skin detail pass on top of your reusable Character Element. Use a sharp real photo as the Element's primary reference for the strongest face lock." : "Real Skin adds the official tiled LTX 2.5 Refine Details pass to final 1080p/4K renders. Preview stays fast."}
+                  </div>
                 </div>
 
                 <details className="studio-inspector-details studio-inspector-advanced">
                   <summary>Advanced</summary>
                   <div className="mt-3 grid gap-3">
-                    <div className="grid grid-cols-2 gap-2"><Control label="Seed"><input className="studio-inspector-control" type="number" min={0} value={seed} onChange={(e) => setSeed(Number(e.target.value) || 0)} /></Control><Control label="Decoder"><select className="studio-inspector-control" value={decoder} onChange={(e) => setDecoder(e.target.value as DecoderName)}><option value="conv">Conv</option><option value="diffusion">Diffusion</option></select></Control></div>
+                    <div className="grid grid-cols-2 gap-2"><Control label="Seed"><input className="studio-inspector-control" type="number" min={0} value={seed} onChange={(e) => setSeed(Number(e.target.value) || 0)} /></Control><Control label="Preview decoder"><select className="studio-inspector-control" disabled={quality !== "preview"} value={quality === "preview" ? decoder : "diffusion"} onChange={(e) => setDecoder(e.target.value as DecoderName)}><option value="conv">Conv · fast</option><option value="diffusion">Diffusion · detailed</option></select></Control></div>
                     <label className="studio-field-label">Sound direction<textarea value={audioDirection} onChange={(e) => setAudioDirection(e.target.value)} rows={4} className="studio-inspector-textarea" placeholder="Ambience, dialogue, Foley, music direction..." /></label>
                     {mode === "factory" && youtube?.enabled && (
                       <div className="studio-advanced-card">

@@ -6,6 +6,7 @@ export type VideoModelName = "ltx-2.5" | "wan" | "minimax";
 export type DecoderName = "conv" | "diffusion";
 export type ContinuityMode = "off" | "balanced" | "strict";
 export type ContinuityQCMode = "off" | "auto" | "strict";
+export type RealismProfile = "standard" | "real_skin" | "identity_max";
 export type GenerationMode = "factory" | "storyboard" | "direct";
 export type YouTubePrivacy = "private" | "unlisted" | "public";
 export type JobStatusName = "queued" | "running" | "completed" | "failed";
@@ -117,6 +118,7 @@ export interface VideoGenerationRequest {
   decoder: DecoderName;
   enhance_prompt: boolean;
   quality: RenderQuality;
+  realism_profile: RealismProfile;
   audio_mode: AudioMode;
   audio_direction?: string | null;
   provider: VideoProviderName;
@@ -160,6 +162,8 @@ export interface VideoGenerationResponse {
   model: string;
   quality: RenderQuality;
   quality_note: string;
+  realism_profile: RealismProfile;
+  detail_refined: boolean;
   audio_mode: AudioMode;
   chunk_count: number;
   gpu: string | null;
@@ -193,6 +197,7 @@ export interface FullVideoGenerationRequest {
   decoder: DecoderName;
   enhance_prompt: boolean;
   quality: RenderQuality;
+  realism_profile: RealismProfile;
   audio_mode: AudioMode;
   audio_direction?: string | null;
   provider: VideoProviderName;
@@ -220,6 +225,8 @@ export interface FullVideoGenerationResponse {
   model: string;
   quality: RenderQuality;
   quality_note: string;
+  realism_profile: RealismProfile;
+  detail_refined: boolean;
   audio_mode: AudioMode;
   gpu: string | null;
   media_info: MediaInfo;
@@ -265,6 +272,7 @@ export interface GenerationCapabilitiesResponse {
   }>;
   aspect_ratios: AspectRatio[];
   decoders: DecoderName[];
+  realism_profiles: Array<{ id: RealismProfile; label: string; description: string }>;
   continuity_modes: ContinuityMode[];
   audio_modes: AudioMode[];
   image_conditioning: boolean;
@@ -339,6 +347,8 @@ export interface RenderedSceneVideo {
   mediaInfo: MediaInfo;
   estimatedCostUsd: number | null;
   qualityNote: string;
+  realismProfile: RealismProfile;
+  detailRefined: boolean;
   audioMode: AudioMode;
   chunkCount: number;
   continuityMode: ContinuityMode;
@@ -359,6 +369,7 @@ export interface FactoryGenerationRequest {
   scene_duration_seconds: number;
   aspect_ratio: AspectRatio;
   quality: RenderQuality;
+  realism_profile: RealismProfile;
   audio_mode: AudioMode;
   audio_direction?: string | null;
   provider: VideoProviderName;
@@ -391,6 +402,8 @@ export interface FactoryGenerationResponse {
   aspect_ratio: AspectRatio;
   quality: RenderQuality;
   quality_note: string;
+  realism_profile: RealismProfile;
+  detail_refined: boolean;
   audio_mode: AudioMode;
   has_audio: boolean;
   width: number | null;

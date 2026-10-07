@@ -49,8 +49,9 @@ class HuggingFaceLTXProvider(VideoProvider):
         reference_strength: float = 0.95,
         element_reference_sheet_path: str | None = None,
         element_reference_strength: float = 1.0,
+        realism_profile: str = "standard",
     ) -> VideoGenerationResult:
-        del reference_image_path, reference_strength, render_mode  # ZeroGPU fallback does not expose Triven production controls.
+        del reference_image_path, reference_strength, render_mode, realism_profile  # ZeroGPU fallback does not expose Triven production controls.
         if element_reference_sheet_path:
             raise ValueError("Reusable Element reference conditioning currently requires the Modal LTX provider.")
         del element_reference_strength
