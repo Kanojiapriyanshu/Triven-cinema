@@ -1,4 +1,45 @@
+import argparse
+import subprocess
 from pathlib import Path
+
+
+LTX_REPO = Path("/opt/LTX-2")
+LTX_PYTHON = LTX_REPO / ".venv" / "bin" / "python"
+
+
+def build_retake_subprocess_command(
+    *,
+    input_path: Path,
+    output_path: Path,
+    prompt: str,
+    start_time: float,
+    end_time: float,
+    seed: int,
+    python_executable: Path = LTX_PYTHON,
+) -> list[str]:
+    """Build the command that runs Retake inside the LTX uv virtualenv.
+
+    The Modal function itself runs under the image's outer Python interpreter,
+    while `uv sync --extra natten` installs torch and the LTX packages into
+    `/opt/LTX-2/.venv`. Running this module with that interpreter keeps Retake
+    on the exact same tested LTX/PyTorch environment as video generation.
+    """
+    return [
+        str(python_executable),
+        str(Path(__file__).resolve()),
+        "--input-path",
+        str(input_path),
+        "--output-path",
+        str(output_path),
+        "--prompt",
+        prompt,
+        "--start-time",
+        str(max(0.0, float(start_time))),
+        "--end-time",
+        str(max(0.0, float(end_time))),
+        "--seed",
+        str(int(seed)),
+    ]
 
 
 def retake_audio_only(
@@ -10,11 +51,47 @@ def retake_audio_only(
     end_time: float,
     seed: int,
 ) -> None:
-    """Use LTX RetakePipeline to regenerate audio while freezing video.
+    """Regenerate audio while freezing video in the LTX project environment.
 
-    This helper is intentionally tied to the pinned LTX v1.4.2 API used by the
-    Modal image. Keep the repo pin and this helper in sync when upgrading LTX.
+    Do not import torch/LTX packages in Modal's outer interpreter. They live in
+    the uv environment created by `uv sync` at image build time. The previous
+    implementation imported torch here and failed with `No module named 'torch'`.
     """
+    if not LTX_PYTHON.exists():
+        raise RuntimeError(
+            "LTX Python environment is missing at /opt/LTX-2/.venv/bin/python. "
+            "Redeploy the current Modal image with `modal deploy modal/app.py`."
+        )
+
+    command = build_retake_subprocess_command(
+        input_path=input_path,
+        output_path=output_path,
+        prompt=prompt,
+        start_time=start_time,
+        end_time=end_time,
+        seed=seed,
+    )
+    process = subprocess.run(
+        command,
+        cwd=LTX_REPO,
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        details = (process.stderr or process.stdout or "unknown Retake failure")[-8000:]
+        raise RuntimeError("LTX audio Retake failed:\n" + details)
+
+
+def _retake_audio_in_ltx_env(
+    *,
+    input_path: Path,
+    output_path: Path,
+    prompt: str,
+    start_time: float,
+    end_time: float,
+    seed: int,
+) -> None:
+    """Actual Retake implementation; executed by /opt/LTX-2/.venv/bin/python."""
     import torch
     from ltx_core.model.video_vae import AUTO_TILING, get_video_chunks_number
     from ltx_pipelines.retake import RetakePipeline
@@ -64,3 +141,30 @@ def retake_audio_only(
             video_chunks_number=get_video_chunks_number(result.num_frames, result.tiling_config),
             color_space=hdr,
         )
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run LTX audio-only Retake inside the LTX uv environment.")
+    parser.add_argument("--input-path", required=True)
+    parser.add_argument("--output-path", required=True)
+    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--start-time", type=float, default=0.0)
+    parser.add_argument("--end-time", type=float, required=True)
+    parser.add_argument("--seed", type=int, default=42)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    _retake_audio_in_ltx_env(
+        input_path=Path(args.input_path),
+        output_path=Path(args.output_path),
+        prompt=args.prompt,
+        start_time=args.start_time,
+        end_time=args.end_time,
+        seed=args.seed,
+    )
+
+
+if __name__ == "__main__":
+    main()
