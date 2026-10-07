@@ -11,6 +11,7 @@ from inference.providers.base import VideoGenerationResult, VideoProvider
 GENERATED_DIR = (Path(__file__).resolve().parents[4] / "storage" / "generated").resolve()
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 ProgressCallback = Callable[[int, int, str], None]
+LEGACY_INGREDIENTS_MAX_SECONDS = 20.0
 
 
 def split_duration(duration_seconds: float, max_chunk_seconds: float | None = None) -> list[float]:
@@ -31,6 +32,34 @@ def split_duration(duration_seconds: float, max_chunk_seconds: float | None = No
     if remaining > 0.001:
         chunks.append(round(remaining, 3))
     return chunks
+
+
+def split_duration_balanced(duration_seconds: float, max_chunk_seconds: float) -> list[float]:
+    """Split a logical shot into near-equal compatibility chunks.
+
+    This is used only when an older Modal Ingredients worker rejects a logical
+    identity-conditioned shot above its legacy 20s ceiling. Equalizing the
+    chunks avoids a 20s + 10s shape for a 30s talking-head shot, which tends to
+    make the shorter tail visually less stable.
+    """
+    total = float(duration_seconds)
+    maximum = float(max_chunk_seconds)
+    if total <= 0 or maximum <= 0:
+        raise ValueError("Duration and maximum chunk duration must be positive.")
+    count = max(1, math.ceil(total / maximum))
+    value = total / count
+    chunks = [round(value, 3)] * count
+    # Preserve the exact requested runtime after decimal rounding.
+    chunks[-1] = round(total - sum(chunks[:-1]), 3)
+    return chunks
+
+
+def _is_legacy_ingredients_duration_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "element identity-conditioned scenes are limited to" in message
+        and "ingredients" in message
+    )
 
 
 def _continuation_prompt(prompt: str, part: int, count: int) -> str:
@@ -70,26 +99,52 @@ def render_long_clip(
     Factory scenes use shorter DFR shots instead; providers that do not expose native
     long-video windowing fall back to application-level continuation chunks when possible.
     """
+    chunks: list[float] | None = None
     if provider.supports_native_long_video or duration_seconds <= settings.ltx_native_chunk_seconds:
         if progress:
             progress(0, 1, "Rendering LTX clip" if duration_seconds <= settings.ltx_native_chunk_seconds else "Rendering native LTX temporal windows")
-        return provider.generate(
-            prompt=prompt,
-            width=width,
-            height=height,
-            duration_seconds=duration_seconds,
-            seed=seed,
-            decoder=decoder,
-            enhance_prompt=enhance_prompt,
-            render_mode=render_mode,
-            reference_image_path=reference_image_path,
-            reference_strength=reference_strength,
-            element_reference_sheet_path=element_reference_sheet_path,
-            element_reference_strength=element_reference_strength,
-            realism_profile=realism_profile,
-        )
+        try:
+            return provider.generate(
+                prompt=prompt,
+                width=width,
+                height=height,
+                duration_seconds=duration_seconds,
+                seed=seed,
+                decoder=decoder,
+                enhance_prompt=enhance_prompt,
+                render_mode=render_mode,
+                reference_image_path=reference_image_path,
+                reference_strength=reference_strength,
+                element_reference_sheet_path=element_reference_sheet_path,
+                element_reference_strength=element_reference_strength,
+                realism_profile=realism_profile,
+            )
+        except RuntimeError as exc:
+            # v11.1 can request a 30s identity-conditioned logical shot, while a
+            # still-deployed pre-v11 Modal worker may advertise the old 20s
+            # Ingredients ceiling. Do not fail the user's selected runtime. Fall
+            # back to application-level continuation chunks with the same
+            # canonical Element sheet and previous-frame conditioning. Once the
+            # current worker is deployed this branch is never taken and 30s can
+            # remain one native invocation.
+            if not (
+                element_reference_sheet_path
+                and duration_seconds > LEGACY_INGREDIENTS_MAX_SECONDS + 1e-6
+                and provider.name.startswith("modal")
+                and _is_legacy_ingredients_duration_error(exc)
+            ):
+                raise
+            chunks = split_duration_balanced(duration_seconds, LEGACY_INGREDIENTS_MAX_SECONDS)
+            if progress:
+                progress(
+                    0,
+                    len(chunks),
+                    "Active Modal worker uses the legacy 20s Ingredients ceiling; "
+                    "continuing with identity-locked compatibility chunks",
+                )
 
-    chunks = split_duration(duration_seconds)
+    if chunks is None:
+        chunks = split_duration(duration_seconds)
     if len(chunks) > 1 and not provider.name.startswith("modal"):
         raise ValueError(
             "Long-form continuation currently requires a provider with native long-video "
