@@ -122,6 +122,17 @@ def _safe_title(prompt: str) -> str:
     return (compact[:96].rstrip(" .,:;-") or "Triven Cinema")[:100]
 
 
+def _qc_unavailable_is_fatal(strict_requested: bool) -> bool:
+    """Return whether provider-unavailable QC should abort an otherwise valid render.
+
+    Strict mode still rejects clips when QC actually runs and detects a real defect.
+    This switch applies only when QC could not run at all (for example Gemini 429,
+    timeout, or provider outage). Production defaults fail-open so rendered video is
+    preserved and the unavailable QC is surfaced as a warning instead.
+    """
+    return bool(strict_requested and not settings.factory_qc_fail_open_on_unavailable)
+
+
 def run_factory_generation(
     request: FactoryGenerationRequest,
     *,
@@ -383,7 +394,7 @@ def run_factory_generation(
                         canonical_reference_paths=element_canonical_reference_paths(active_elements),
                     )
                     qc_attempted = qc_attempted or not qc.skipped
-                    if qc.skipped and effective_qc_mode == "strict":
+                    if qc.skipped and _qc_unavailable_is_fatal(effective_qc_mode == "strict"):
                         path.unlink(missing_ok=True)
                         raise RuntimeError(
                             f"Scene {index + 1} strict continuity QC could not run: {qc.note}"
@@ -436,7 +447,7 @@ def run_factory_generation(
                     and settings.factory_audio_qc_strict_final
                 )
 
-                if audio_qc.skipped and strict_audio:
+                if audio_qc.skipped and _qc_unavailable_is_fatal(strict_audio):
                     accepted_path.unlink(missing_ok=True)
                     raise RuntimeError(
                         f"Scene {index + 1} final audio QC could not run: {audio_qc.note}"
@@ -479,12 +490,21 @@ def run_factory_generation(
                             audio_direction=request.audio_direction,
                         )
                         audio_qc_attempted = audio_qc_attempted or not audio_qc.skipped
-                        if audio_qc.skipped and strict_audio:
-                            accepted_path.unlink(missing_ok=True)
-                            raise RuntimeError(
-                                f"Scene {index + 1} audio Retake could not be rechecked: {audio_qc.note}"
-                            )
-                        if not audio_qc.skipped and not audio_qc.passed:
+                        if audio_qc.skipped:
+                            if _qc_unavailable_is_fatal(strict_audio):
+                                accepted_path.unlink(missing_ok=True)
+                                raise RuntimeError(
+                                    f"Scene {index + 1} audio Retake could not be rechecked: {audio_qc.note}"
+                                )
+                            # The original QC did run and failed, but the post-Retake
+                            # verification provider is unavailable. Keep the repaired
+                            # clip and report QC as not passed rather than discarding it.
+                            all_audio_qc_passed = False
+                            if audio_qc.note:
+                                audio_warnings.append(
+                                    f"Scene {index + 1} audio Retake recheck unavailable: {audio_qc.note}"
+                                )
+                        elif not audio_qc.passed:
                             all_audio_qc_passed = False
                             final_note = audio_qc.note or "; ".join(audio_qc.violations) or audio_note
                             if strict_audio:

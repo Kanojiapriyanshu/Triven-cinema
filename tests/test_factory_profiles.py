@@ -1,11 +1,18 @@
 import unittest
+from unittest.mock import patch
 
+from app.core.config import settings
 from app.schemas.factory import FactoryGenerationRequest
 from app.schemas.generation import ScenePlanRequest, VideoGenerationRequest
 from app.services.video_combiner import delivery_dimensions
 from app.services.video_profiles import duration_profile, validate_factory_scene_duration, validate_scene_duration
 from app.services.scene_planner import create_prompt_only_plan, create_scene_plan
-from app.services.factory_service import _factory_scene_durations, _scene_seed, _wants_single_continuous_shot
+from app.services.factory_service import (
+    _factory_scene_durations,
+    _qc_unavailable_is_fatal,
+    _scene_seed,
+    _wants_single_continuous_shot,
+)
 
 
 class FactoryProfileTests(unittest.TestCase):
@@ -83,6 +90,16 @@ class FactoryProfileTests(unittest.TestCase):
         self.assertTrue(_wants_single_continuous_shot("Filmed as one continuous static shot with no cuts."))
         self.assertTrue(_wants_single_continuous_shot("A single take talking-head creator video."))
         self.assertFalse(_wants_single_continuous_shot("A montage of several cinematic scenes."))
+
+    def test_qc_provider_outage_does_not_discard_render_by_default(self):
+        self.assertTrue(settings.factory_qc_fail_open_on_unavailable)
+        self.assertFalse(_qc_unavailable_is_fatal(True))
+        self.assertFalse(_qc_unavailable_is_fatal(False))
+
+    def test_qc_provider_outage_can_be_configured_fail_closed(self):
+        with patch.object(settings, "factory_qc_fail_open_on_unavailable", False):
+            self.assertTrue(_qc_unavailable_is_fatal(True))
+            self.assertFalse(_qc_unavailable_is_fatal(False))
 
     def test_factory_uses_distinct_deterministic_seed_per_scene(self):
         seeds = [_scene_seed(42, index, 0) for index in range(6)]

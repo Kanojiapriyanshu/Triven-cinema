@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     factory_audio_qc_enabled: bool = True
     factory_audio_retake_enabled: bool = True
     factory_audio_qc_strict_final: bool = True
+    # External QC is advisory infrastructure. A provider outage / 429 / timeout must
+    # never discard an already rendered LTX clip. Real QC failures still remain strict.
+    factory_qc_fail_open_on_unavailable: bool = True
 
     # Continuity/cardinality guard. "auto" requests use this visual QC gate when
     # Gemini is configured; QC failures can trigger a bounded regeneration before
