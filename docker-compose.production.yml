@@ -22,7 +22,7 @@ services:
     # VPS-local debugging only.
     # NOT exposed publicly.
     ports:
-      - "127.0.0.1:3334:8000"
+      - "127.0.0.1:3337:8000"
 
     volumes:
       - ./storage:/app/storage
@@ -67,7 +67,7 @@ services:
 
       args:
         # Browser talks to the same public domain:
-        # https://devansh.info/api/...
+        # https://cinema.devansh.info/api/...
         NEXT_PUBLIC_API_URL: ""
 
         # Server-side/container communication.
@@ -89,7 +89,7 @@ services:
     # VPS-local debugging only.
     # NOT publicly accessible.
     ports:
-      - "127.0.0.1:3333:3000"
+      - "127.0.0.1:3336:3000"
 
     init: true
 
@@ -110,7 +110,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+          "fetch('http://127.0.0.1:3000',{signal:AbortSignal.timeout(5000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
         ]
       interval: 30s
       timeout: 10s
@@ -129,6 +129,10 @@ services:
 
   maintenance:
     image: triven-cinema-api:local
+
+    # This process has no HTTP server; do not inherit the API image's probe.
+    healthcheck:
+      disable: true
 
     env_file:
       - .env

@@ -7,46 +7,49 @@ same images that you deploy (`.github/workflows/ci.yml`).
 
 | Piece | Where | Notes |
 |---|---|---|
-| Web (Next.js) | `web` container, port 3000 (loopback) | Same-origin `/api/*` and `/media/*` are proxied to the API |
-| API (FastAPI) | `api` container, port 8000 (loopback) | Runs as an unprivileged user, one worker, SQLite state in `./storage` |
+| Web (Next.js) | `web` container :3000 → `127.0.0.1:3336` | Same-origin `/api/*` and `/media/*` are proxied to the API |
+| API (FastAPI) | `api` container :8000 → `127.0.0.1:3337` | Runs as an unprivileged user, one worker, SQLite state in `./storage` |
 | Maintenance | `maintenance` container | Backup + storage cleanup every 6 hours |
 | GPU | Modal app `triven-cinema-ltx` | `generate_video`, `retake_audio`, `upscale_video` |
 | Edge | Host Nginx or Caddy (`deploy/hostinger`) | TLS and the public domain |
 
 ## 2. First deployment
 
+The public URL is **https://cinema.devansh.info**. Follow the ordered
+[Hostinger setup](../deploy/hostinger/README.md) for DNS, environment, first container startup, and TLS.
+Ports `3336` (web) and `3337` (API) are host-loopback upstreams; users connect on HTTPS port 443.
+
 ```bash
-git clone https://github.com/Kanojiapriyanshu/Triven-cinema.git && cd Triven-cinema
-cp .env.production.example .env        # then edit every empty value you need
+cp .env.production.example .env
+chmod 600 .env
+# Edit .env with the required values below.
 python3 scripts/production_preflight.py
-docker compose -f docker-compose.production.yml up -d --build
-docker compose -f docker-compose.production.yml ps          # api and web should become "healthy"
-curl -fsS http://127.0.0.1:3334/api/v1/health/ready
+# First boot only, before the proxy certificate exists:
+./scripts/deploy_hostinger.sh --skip-public-check
+# Install the Nginx site and issue TLS as described in the Hostinger guide.
+./scripts/status_hostinger.sh
 ```
-
-### Open access (no sign-in)
-
-`AUTO_LOGIN_EMAIL=studio@triven.local` (the default in the templates) removes the sign-in: every visitor is signed in
-automatically as that account and lands in the studio. Consequences to accept knowingly:
-
-- everyone shares **one** workspace (characters, projects, renders, credits);
-- anyone who can open the URL can start paid GPU renders. Restrict access at the proxy (VPN, IP allow-list or HTTP basic
-  auth in Nginx/Caddy) and keep `JOB_MAX_PENDING` low.
-
-An account that already exists for that email keeps its data, so point it at your own account email to keep your existing
-Elements. Clear the value (and set `SMTP_*`) to go back to email sign-in.
 
 ### Required settings
 
-The API **refuses to start** when these are wrong (the error names the setting):
+Production startup blocks unsafe authentication and rendering configuration:
 
-- `TRIVEN_SECRET_KEY` - at least 32 random characters. `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
-  It signs sessions and encrypts stored YouTube tokens. Changing it signs everyone out.
-- `DEBUG=false`.
-- A way to sign in: `AUTO_LOGIN_EMAIL` (open access) or, for email sign-in, `SMTP_HOST` + `SMTP_FROM` (plus `SMTP_USERNAME`/`SMTP_PASSWORD`,
-  `SMTP_SECURITY=starttls|ssl|none`). `DEMO_AUTH_SHOW_OTP=true` shows the code in the browser and only belongs on a
-  private demo.
-- `BILLING_ENABLED=true` also needs the Stripe keys.
+- `TRIVEN_SECRET_KEY`: at least 32 random characters. Generate with
+  `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` and keep it stable in your secret manager.
+  It signs sessions and encrypts stored YouTube tokens. Changing it signs users out and prevents decrypting old tokens.
+- `TRIVEN_DOMAIN=cinema.devansh.info`, `FRONTEND_URL=https://cinema.devansh.info`, `APP_ENV=production`, `DEBUG=false`.
+- `AUTH_ENABLED=true`, `AUTO_LOGIN_EMAIL=""`, `DEMO_AUTH_SHOW_OTP=false`. Each user signs in with an emailed code.
+  Shared auto-login and visible demo codes are available only for local development.
+- `SMTP_HOST`, `SMTP_FROM` (a verified sender), and your provider's `SMTP_USERNAME` / `SMTP_PASSWORD`.
+  Use `SMTP_SECURITY=starttls` (usually port 587) or `ssl` (usually port 465).
+- `VIDEO_PROVIDER=modal`, dedicated `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`, and the deployed Modal app/function names.
+- `ENABLE_SYNC_RENDER_ENDPOINTS=false`, `JOB_WORKERS=1`, and a small positive `JOB_MAX_PENDING`.
+- `CORS_ORIGINS=""` for this same-origin deployment; wildcard origins are rejected.
+- `BILLING_ENABLED=true` additionally needs Stripe keys and at least one configured credit-pack price.
+
+Email verification allows people who can receive codes to create accounts. With `BILLING_ENFORCE_CREDITS=false`,
+those users can still submit operator-funded renders. For a public paid service, finish the Stripe checkout/webhook
+verification and enable credit enforcement before admitting users; otherwise restrict access at the proxy.
 
 ### GPU worker (Modal)
 
@@ -72,10 +75,10 @@ image model answers HTTP 429 (the app then explains this). Without it, creators 
 - **Restarting the API ends running renders.** Check `storage/jobs/jobs.sqlite3` (`generation_jobs` with status
   `queued`/`running`) first. A job interrupted by a restart is marked failed with "Interrupted by API restart", its GPU
   output is lost, and it is not refunded automatically, so wait for running jobs to finish before restarting.
-- **Update:** `git pull && docker compose -f docker-compose.production.yml up -d --build`.
+- **Update:** after running jobs finish, `git pull --ff-only && ./scripts/deploy_hostinger.sh`. The script aborts on failed backups, local readiness, or public HTTPS checks.
 - **Roll back:** check out the previous tag/commit and run the same command.
 - **Backups:** the maintenance service writes dated snapshots to `./storage/backups` (kept `BACKUP_RETENTION_DAYS`).
-  Copy that folder off the server; it holds accounts, chats, elements and job history.
+  Copy that folder off the server; it holds database snapshots and metrics. Also back up the full `./storage` tree for generated videos and Element image files, and store `.env` separately in a secret manager. Database snapshots alone cannot restore media.
 - **Disk:** renders are refused below `MINIMUM_FREE_DISK_GB`; old previews and finals are cleaned by retention settings.
 
 ## 4. Costs and quality settings creators should know
@@ -103,9 +106,10 @@ motion and voice stay the same; re-rendering at 1080p produces a different video
 
 - [ ] `python3 scripts/production_preflight.py` has no `[FAIL]`
 - [ ] `TRIVEN_SECRET_KEY` set and backed up in a password manager
-- [ ] Either email sign-in works (SMTP tested, `DEMO_AUTH_SHOW_OTP=false`) or open access is deliberately on and the site is protected at the proxy
+- [ ] Email sign-in tested with real SMTP, `DEMO_AUTH_SHOW_OTP=false`, and `AUTO_LOGIN_EMAIL=""`
 - [ ] `modal deploy modal/app.py` done and one Draft rendered end to end
 - [ ] Gemini billing enabled (or creators told to upload their own start frame)
-- [ ] TLS and the public domain verified through Nginx/Caddy
+- [ ] TLS, certificate renewal, and both public web/API health checks verified
+- [ ] Paid access policy chosen: tested Stripe credit enforcement or proxy access restriction
 - [ ] Backups copied off the server once and a restore tried
 - [ ] CI is green on the commit being deployed

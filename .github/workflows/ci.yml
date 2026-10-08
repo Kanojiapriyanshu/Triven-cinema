@@ -75,10 +75,18 @@ jobs:
       - name: Build web image
         run: docker build -t triven-cinema-web:ci --build-arg GIT_SHA=${{ github.sha }} apps/web
 
+      - name: Validate host Nginx configuration
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/hostinger/nginx.triven-cinema.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:stable-alpine nginx -t
+
       - name: API refuses to start in production without a signing secret
         run: |
           set +e
-          docker run --rm -e APP_ENV=production -e DEBUG=false -e DEMO_AUTH_SHOW_OTP=true \
+          docker run --rm -e APP_ENV=production -e DEBUG=false \
+            -e FRONTEND_URL=https://cinema.devansh.info -e DEMO_AUTH_SHOW_OTP=false \
+            -e SMTP_HOST=smtp.example.test -e SMTP_FROM=ci@example.test \
             -e ENABLE_SYNC_RENDER_ENDPOINTS=false triven-cinema-api:ci > startup.log 2>&1 &
           pid=$!
           for i in $(seq 1 40); do kill -0 $pid 2>/dev/null || break; sleep 1; done
@@ -91,7 +99,9 @@ jobs:
           docker run -d --name api -p 8000:8000 \
             -e APP_ENV=production -e DEBUG=false \
             -e TRIVEN_SECRET_KEY=ci-only-secret-key-0123456789abcdef0123456789 \
-            -e DEMO_AUTH_SHOW_OTP=true -e ENABLE_SYNC_RENDER_ENDPOINTS=false \
+            -e FRONTEND_URL=https://cinema.devansh.info -e DEMO_AUTH_SHOW_OTP=false \
+            -e SMTP_HOST=smtp.example.test -e SMTP_FROM=ci@example.test \
+            -e ENABLE_SYNC_RENDER_ENDPOINTS=false \
             triven-cinema-api:ci
           for i in $(seq 1 60); do
             curl -fsS http://127.0.0.1:8000/api/v1/health/ready && break

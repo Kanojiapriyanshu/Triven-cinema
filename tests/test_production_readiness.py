@@ -1,6 +1,7 @@
 """Production safety: fail fast on unsafe settings, and real sign-in email delivery."""
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,8 +15,10 @@ SAFE = dict(
     _env_file=None,
     app_env="production",
     debug=False,
+    frontend_url="https://cinema.devansh.info",
     triven_secret_key="x" * 40,
     auth_enabled=True,
+    auto_login_email="",
     demo_auth_show_otp=False,
     smtp_host="smtp.example.test",
     smtp_from="no-reply@example.test",
@@ -45,16 +48,39 @@ class ProductionProblemsTests(unittest.TestCase):
         errors, _ = make(smtp_host="", smtp_from="", demo_auth_show_otp=False).production_problems()
         self.assertTrue(any("SMTP_HOST" in item for item in errors))
 
-    def test_demo_mode_is_allowed_but_loudly_warned(self):
-        errors, warnings = make(smtp_host="", smtp_from="", demo_auth_show_otp=True).production_problems()
-        self.assertEqual(errors, [])
-        self.assertTrue(any("DEMO_AUTH_SHOW_OTP" in item for item in warnings))
+    def test_demo_mode_blocks_startup(self):
+        errors, _ = make(demo_auth_show_otp=True).production_problems()
+        self.assertTrue(any("DEMO_AUTH_SHOW_OTP" in item for item in errors))
 
-    def test_other_risky_settings_are_warned(self):
-        _, warnings = make(enable_sync_render_endpoints=True, cors_origins="*", triven_secret_key="short-secret", gemini_api_key="").production_problems()
-        joined = " ".join(warnings)
-        for needle in ("ENABLE_SYNC_RENDER_ENDPOINTS", "CORS_ORIGINS", "TRIVEN_SECRET_KEY is short", "GEMINI_API_KEY"):
+    def test_other_risky_settings_block_startup(self):
+        errors, warnings = make(enable_sync_render_endpoints=True, cors_origins="*", triven_secret_key="short-secret", gemini_api_key="").production_problems()
+        joined = " ".join(errors)
+        for needle in ("ENABLE_SYNC_RENDER_ENDPOINTS", "CORS_ORIGINS", "TRIVEN_SECRET_KEY"):
             self.assertIn(needle, joined)
+        self.assertTrue(any("GEMINI_API_KEY" in item for item in warnings))
+
+    def test_login_bypasses_block_startup(self):
+        for override, needle in (({"auth_enabled": False}, "AUTH_ENABLED"), ({"auto_login_email": "owner@example.com"}, "AUTO_LOGIN_EMAIL")):
+            with self.subTest(override=override):
+                errors, _ = make(**override).production_problems()
+                self.assertTrue(any(needle in item for item in errors))
+
+    def test_production_frontend_must_be_an_https_origin(self):
+        for origin in ("http://cinema.devansh.info", "https://", "https://user:pass@cinema.devansh.info", "https://cinema.devansh.info/path", "https://cinema.devansh.info:bad", "https://cinema.devansh.info#fragment"):
+            with self.subTest(origin=origin):
+                errors, _ = make(frontend_url=origin).production_problems()
+                self.assertTrue(any("FRONTEND_URL" in item for item in errors))
+
+    def test_plaintext_or_unrecognized_smtp_security_blocks_startup(self):
+        for security in ("none", "tls-typo", ""):
+            with self.subTest(security=security):
+                errors, _ = make(smtp_security=security).production_problems()
+                self.assertTrue(any("SMTP_SECURITY" in item for item in errors))
+
+    def test_multiple_gpu_workers_or_disabled_billing_enforcement_block_startup(self):
+        errors, _ = make(job_workers=2, billing_enforce_credits=True, billing_enabled=False).production_problems()
+        self.assertTrue(any("JOB_WORKERS" in item for item in errors))
+        self.assertTrue(any("BILLING_ENFORCE_CREDITS" in item for item in errors))
 
     def test_billing_needs_its_stripe_secrets(self):
         errors, _ = make(billing_enabled=True).production_problems()
@@ -120,7 +146,7 @@ class SignInRouteTests(unittest.TestCase):
         auth_service.AUTH_DIR = root / "auth"
         auth_service.AUTH_DB = auth_service.AUTH_DIR / "auth.sqlite3"
         auth_service._INITIALIZED = False
-        self.patches = [patch.multiple(settings, auth_enabled=True, triven_secret_key="route-test-secret-key-1234567890")]
+        self.patches = [patch.multiple(settings, app_env="development", auth_enabled=True, auto_login_email="", triven_secret_key="route-test-secret-key-1234567890")]
         for item in self.patches:
             item.start()
 
@@ -162,6 +188,19 @@ class SignInRouteTests(unittest.TestCase):
                 patch("app.api.routes.auth.send_otp_email", side_effect=email_service.EmailDeliveryError("We could not send the sign-in email.")):
             response = self._request()
         self.assertEqual(response.status_code, 502)
+
+    def test_parallel_otp_requests_respect_the_same_cooldown(self):
+        def request_code(_):
+            try:
+                auth_service.request_otp("ada@example.com")
+                return True
+            except auth_service.AuthError:
+                return False
+
+        with patch.multiple(settings, smtp_host="smtp.example.test", smtp_from="no-reply@example.test", auth_otp_cooldown_seconds=60):
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(request_code, range(16)))
+        self.assertEqual(results.count(True), 1)
 
     def test_no_email_and_no_demo_mode_is_a_clear_503(self):
         with patch.multiple(settings, smtp_host="", smtp_from="", demo_auth_show_otp=False):

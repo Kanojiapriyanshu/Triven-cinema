@@ -82,7 +82,7 @@ STRIPE_PRICE_STUDIO="price_..."
 Add the webhook endpoint in Stripe:
 
 ```text
-https://devansh.info/api/v1/billing/webhook
+https://cinema.devansh.info/api/v1/billing/webhook
 ```
 
 Subscribe it to at least:
@@ -118,7 +118,7 @@ Configure a Google Cloud OAuth web client and enable the YouTube Data API v3.
 Register this OAuth callback exactly:
 
 ```text
-https://devansh.info/api/v1/youtube/callback
+https://cinema.devansh.info/api/v1/youtube/callback
 ```
 
 Then configure:
@@ -127,7 +127,7 @@ Then configure:
 YOUTUBE_ENABLED=true
 YOUTUBE_CLIENT_ID="..."
 YOUTUBE_CLIENT_SECRET="..."
-YOUTUBE_REDIRECT_URI="https://devansh.info/api/v1/youtube/callback"
+YOUTUBE_REDIRECT_URI="https://cinema.devansh.info/api/v1/youtube/callback"
 YOUTUBE_ALLOW_PUBLIC=false
 TRIVEN_SECRET_KEY="a-long-random-production-secret"
 ```
@@ -143,8 +143,8 @@ The production shape is:
 ```text
 Internet
    -> host Nginx :80/:443
-      -> /api/* and /media/* -> 127.0.0.1:3334 (FastAPI container)
-      -> everything else     -> 127.0.0.1:3333 (Next.js container)
+      -> /api/* and /media/* -> 127.0.0.1:3337 (FastAPI container)
+      -> everything else     -> 127.0.0.1:3336 (Next.js container)
 
 FastAPI -> Modal API -> B200 / LTX-2.5
 ```
@@ -158,7 +158,7 @@ sudo cp deploy/hostinger/nginx.triven-cinema.conf /etc/nginx/sites-available/tri
 sudo ln -sf /etc/nginx/sites-available/triven-cinema /etc/nginx/sites-enabled/triven-cinema
 sudo nginx -t
 sudo systemctl reload nginx
-sudo certbot --nginx -d devansh.info
+sudo certbot --nginx -d cinema.devansh.info
 ```
 
 Deploy application containers:

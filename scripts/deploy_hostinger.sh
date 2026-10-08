@@ -4,6 +4,18 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 COMPOSE=(docker compose -f docker-compose.production.yml)
+PUBLIC_URL="https://cinema.devansh.info"
+SKIP_PUBLIC_CHECK=false
+
+case "${1:-}" in
+  "") ;;
+  --skip-public-check) SKIP_PUBLIC_CHECK=true ;;
+  *) echo "Usage: $0 [--skip-public-check]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "Usage: $0 [--skip-public-check]" >&2
+  exit 2
+fi
 
 if [ ! -f .env ]; then
   echo "Missing .env. Copy .env.production.example to .env and configure it first." >&2
@@ -11,42 +23,50 @@ if [ ! -f .env ]; then
 fi
 
 mkdir -p storage/generated storage/jobs storage/metrics storage/backups storage/logs
-chmod 700 storage/backups || true
+if [ -O storage/backups ]; then
+  chmod 700 storage/backups
+fi
 
 python3 scripts/production_preflight.py
 
-# Capture a consistent SQLite/metrics backup before replacing containers.
-python3 scripts/backup_state.py || {
-  echo "Warning: pre-deploy state backup failed; continuing because the application may be fresh." >&2
-}
-
+# Build before touching the running stack. A failed build leaves it running.
 "${COMPOSE[@]}" build --pull
-"${COMPOSE[@]}" up -d --remove-orphans
 
-echo "Waiting for API readiness..."
-for _ in $(seq 1 60); do
-  if "${COMPOSE[@]}" exec -T api \
-      curl -fsS http://127.0.0.1:8000/api/v1/health/ready >/dev/null 2>&1; then
-    echo "API is ready."
-    "${COMPOSE[@]}" ps
+# Run with the container's storage ownership. Fresh installations exit successfully
+# without a snapshot; a real backup failure must stop an upgrade.
+"${COMPOSE[@]}" run --rm --no-deps api python /app/scripts/backup_state.py
 
-    domain="devansh.info"
-    if [ -n "$domain" ]; then
-      echo "Checking public HTTPS endpoint: https://$domain/api/v1/health/ready"
-      if curl -fsS --connect-timeout 8 --max-time 15 \
-          "https://$domain/api/v1/health/ready" >/dev/null 2>&1; then
-        echo "Public HTTPS health check passed."
-      else
-        echo "Warning: containers are healthy, but public HTTPS is not reachable yet." >&2
-        echo "Check DNS A/AAAA records, Hostinger firewall/UFW, Nginx config, and Certbot certificate status." >&2
-      fi
-    fi
-    exit 0
+echo "Waiting for API and frontend readiness..."
+if ! "${COMPOSE[@]}" up -d --remove-orphans --wait --wait-timeout 300; then
+  echo "The production services did not become healthy." >&2
+  "${COMPOSE[@]}" ps >&2
+  "${COMPOSE[@]}" logs --tail=160 api web maintenance >&2
+  exit 1
+fi
+
+# These probes also catch broken host port mappings, which container probes cannot.
+for url in \
+  "http://127.0.0.1:3337/api/v1/health/ready" \
+  "http://127.0.0.1:3336/"; do
+  if ! curl -fsS --connect-timeout 5 --max-time 15 "$url" >/dev/null; then
+    echo "Local readiness check failed: $url" >&2
+    exit 1
   fi
-  sleep 2
 done
+"${COMPOSE[@]}" ps
 
-echo "API did not become ready in time." >&2
-"${COMPOSE[@]}" ps >&2
-"${COMPOSE[@]}" logs --tail=160 api >&2
-exit 1
+if [ "$SKIP_PUBLIC_CHECK" = true ]; then
+  echo "Local services are healthy. Public HTTPS checks were explicitly skipped."
+  echo "After DNS/TLS setup, run ./scripts/status_hostinger.sh to verify public readiness."
+  exit 0
+fi
+
+for path in /api/v1/health/ready /; do
+  echo "Checking public HTTPS endpoint: $PUBLIC_URL$path"
+  if ! curl -fsS --connect-timeout 8 --max-time 20 "$PUBLIC_URL$path" >/dev/null; then
+    echo "Public HTTPS readiness failed; deployment is not ready for public traffic." >&2
+    echo "Check DNS A/AAAA records, the VPS firewall, reverse proxy, and TLS certificate." >&2
+    exit 1
+  fi
+done
+echo "Deployment ready: $PUBLIC_URL (frontend 127.0.0.1:3336, API 127.0.0.1:3337)."

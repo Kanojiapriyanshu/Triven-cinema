@@ -5,8 +5,8 @@
 ```text
 Internet
   -> host Nginx :80/:443
-     -> 127.0.0.1:3333 Next.js
-     -> 127.0.0.1:3334 FastAPI
+     -> 127.0.0.1:3336 Next.js
+     -> 127.0.0.1:3337 FastAPI
         -> persistent local job/billing/integration state
         -> generated media
         -> Gemini/fallback planner
@@ -17,27 +17,29 @@ Docker does not publish the application on public interfaces. Nginx/Certbot alre
 
 ## Production issues addressed
 
-1. **Public app ports:** API/web bind only to `127.0.0.1:3334` / `127.0.0.1:3333`.
+1. **Public app ports:** API/web bind only to `127.0.0.1:3337` / `127.0.0.1:3336`.
 2. **Same-origin browser routing:** Nginx routes `/api/*` and `/media/*` to FastAPI; everything else goes to Next.js.
 3. **Internal-state exposure:** SQLite/metrics/backups are private, and `/media/generated/{filename}` is served through a signed-workspace ownership check instead of a raw static storage mount.
-4. **Paid GPU concurrency:** bounded production job queue; synchronous paid render routes can be disabled.
+4. **Paid GPU concurrency:** bounded production job queue; synchronous paid render routes must be disabled.
 5. **Planner resilience:** Gemini has bounded timeouts and local storyboard fallback.
 6. **Process recovery:** Docker restart policies, health checks and graceful shutdown are configured.
 7. **Storage growth:** disk floor, retention cleanup, backup pruning and Docker log rotation.
 8. **State backup:** jobs, billing and integration SQLite databases are backed up before deploys and by maintenance.
 9. **Modal credentials:** server uses dedicated `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`.
-10. **TLS:** existing host Nginx + Certbot owns ports 80/443 and the `devansh.info` certificate.
+10. **TLS:** host Nginx + Certbot is configured for ports 80/443; issue the `cinema.devansh.info` certificate during deployment.
 11. **Long scenes:** 1080p supports 30s/scene and 4K delivery supports 15s/scene. Modal LTX uses upstream temporal-window carry/blend for long scenes.
 12. **Audio:** LTX audio is probed, preserved/mastered/muted explicitly; missing audio is surfaced rather than hidden.
 13. **Customer payment:** Stripe Checkout credit packs + signed webhook + idempotent credit ledger + failure refunds.
 14. **Publishing:** encrypted per-workspace YouTube OAuth refresh tokens + resumable/chunked uploads.
 15. **Workspace isolation:** background job polling is restricted to the signed workspace that created the job.
+16. **Authentication:** production rejects shared auto-login, visible OTPs, weak keys, and unencrypted SMTP. Account identity takes precedence over stale workspace cookies; production media requires an active login.
+17. **Deploy verification:** a failed backup stops deployment. Both containers, both loopback ports, and both public HTTPS routes are checked before success.
 
 ## Required launch checks
 
 - `.env` mode 600 and not tracked by Git.
 - rotate any token previously pasted into chat/terminal history before public launch.
-- `TRIVEN_SECRET_KEY` set before billing/YouTube is enabled.
+- `TRIVEN_SECRET_KEY` set to at least 32 random characters and real SMTP sign-in tested.
 - Stripe Checkout and webhook verified before `BILLING_ENFORCE_CREDITS=true`.
 - YouTube OAuth callback registered exactly and private uploads tested before allowing public/unlisted.
 - LTX repository revision pinned after the current long-video profile is benchmarked.
@@ -53,5 +55,5 @@ Before a broad multi-tenant launch, migrate:
 - jobs/billing/integrations -> Postgres;
 - executor -> Redis/SQS/another durable queue;
 - generated media -> S3/R2/object storage;
-- signed browser workspace -> real login + organizations/RBAC;
+- individual email login -> organizations/RBAC and managed admission;
 - metrics/logging -> centralized observability and alerting.

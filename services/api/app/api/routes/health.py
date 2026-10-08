@@ -1,4 +1,5 @@
 import shutil
+import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -14,17 +15,22 @@ STORAGE_DIR = PROJECT_ROOT / "storage"
 def _storage_writable() -> bool:
     try:
         STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-        probe = STORAGE_DIR / ".health-write-test"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
+        # A unique file avoids concurrent readiness requests deleting each
+        # other's probe, and context cleanup also handles a failed write.
+        with tempfile.TemporaryFile(dir=STORAGE_DIR) as probe:
+            probe.write(b"ok")
+            probe.flush()
         return True
     except OSError:
         return False
 
 
 def _disk_free_gb() -> float:
-    usage = shutil.disk_usage(STORAGE_DIR)
-    return round(usage.free / (1024**3), 2)
+    try:
+        usage = shutil.disk_usage(STORAGE_DIR)
+        return round(usage.free / (1024**3), 2)
+    except OSError:
+        return 0.0
 
 
 @router.get("")
@@ -38,9 +44,10 @@ async def health_check():
 
 @router.get("/ready")
 async def readiness_check():
+    writable = _storage_writable()
     free_gb = _disk_free_gb()
     checks = {
-        "storage_writable": _storage_writable(),
+        "storage_writable": writable,
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "ffprobe": shutil.which("ffprobe") is not None,
         "disk_free_gb": free_gb,

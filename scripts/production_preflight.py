@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import json
+import math
 import os
 import shutil
 import socket
@@ -6,12 +8,14 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
 ERRORS: list[str] = []
 WARNINGS: list[str] = []
+PRODUCTION_DOMAIN = "cinema.devansh.info"
+TRUE_VALUES = {"true", "1", "yes", "on"}
+FALSE_VALUES = {"false", "0", "no", "off"}
 
 
 def ok(message: str) -> None:
@@ -71,7 +75,96 @@ def hostname_resolves(hostname: str) -> bool:
         return False
 
 
+def validate_production_settings(env: dict[str, str]) -> None:
+    """Validate deployment policy without exposing secret values in diagnostics."""
+    if env.get("TRIVEN_DOMAIN", "").strip() != PRODUCTION_DOMAIN:
+        fail(f"TRIVEN_DOMAIN must be {PRODUCTION_DOMAIN} (hostname only, no https://)")
+    else:
+        ok(f"Production domain is {PRODUCTION_DOMAIN}")
+
+    expected_url = f"https://{PRODUCTION_DOMAIN}"
+    if env.get("FRONTEND_URL", "").strip().rstrip("/") != expected_url:
+        fail(f"FRONTEND_URL must be {expected_url}")
+    else:
+        ok("FRONTEND_URL matches the production HTTPS origin")
+
+    if env.get("APP_ENV", "").strip().lower() not in {"production", "prod"}:
+        fail("APP_ENV must be production")
+    if env.get("DEBUG", "").strip().lower() not in FALSE_VALUES:
+        fail("DEBUG must be false")
+
+    cors = env.get("CORS_ORIGINS", "").strip()
+    if "*" in cors:
+        fail("CORS_ORIGINS cannot contain wildcards in production")
+    elif cors:
+        warn("CORS_ORIGINS is set; same-origin production traffic normally does not need CORS")
+    else:
+        ok("CORS_ORIGINS is empty for same-origin production traffic")
+
+    if env.get("AUTH_ENABLED", "true").strip().lower() not in TRUE_VALUES:
+        fail("AUTH_ENABLED must be true in production")
+    if env.get("AUTO_LOGIN_EMAIL", "").strip():
+        fail("AUTO_LOGIN_EMAIL must be empty in production; each visitor must sign in")
+    if env.get("DEMO_AUTH_SHOW_OTP", "true").strip().lower() not in FALSE_VALUES:
+        fail("DEMO_AUTH_SHOW_OTP must be false in production")
+    if len(env.get("TRIVEN_SECRET_KEY", "").strip()) < 32:
+        fail("TRIVEN_SECRET_KEY must contain at least 32 characters in production")
+    else:
+        ok("Session signing secret meets the minimum length")
+
+    if not env.get("SMTP_HOST", "").strip() or not env.get("SMTP_FROM", "").strip():
+        fail("SMTP_HOST and SMTP_FROM are required to deliver sign-in codes")
+    elif env.get("SMTP_SECURITY", "starttls").strip().lower() not in {"starttls", "ssl"}:
+        fail("SMTP_SECURITY must be starttls or ssl in production")
+    else:
+        ok("Encrypted SMTP delivery is configured")
+
+    if env.get("ENABLE_SYNC_RENDER_ENDPOINTS", "true").strip().lower() not in FALSE_VALUES:
+        fail("ENABLE_SYNC_RENDER_ENDPOINTS must be false in production")
+    try:
+        if int(env.get("JOB_WORKERS", "1")) != 1:
+            fail("JOB_WORKERS must be 1 for this single-worker production deployment")
+    except ValueError:
+        fail("JOB_WORKERS must be the integer 1")
+
+    billing_enabled = env.get("BILLING_ENABLED", "false").strip().lower() in TRUE_VALUES
+    enforce_credits = env.get("BILLING_ENFORCE_CREDITS", "false").strip().lower() in TRUE_VALUES
+    if enforce_credits and not billing_enabled:
+        fail("BILLING_ENFORCE_CREDITS=true requires BILLING_ENABLED=true")
+
+
+def resolved_compose_environment() -> dict[str, str] | None:
+    """Use Compose's dotenv/interpolation semantics, never print its secret output."""
+    if not shutil.which("docker"):
+        fail("docker is not installed")
+        return None
+    if not command_ok("docker", "compose", "version"):
+        fail("docker compose is unavailable")
+        return None
+    if not command_ok("docker", "info"):
+        fail("Docker daemon is unavailable or the current user cannot access it")
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(ROOT / "docker-compose.production.yml"),
+             "config", "--format", "json"],
+            cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
+        )
+        if result.returncode:
+            fail("docker-compose.production.yml failed validation; check .env and Compose configuration")
+            return None
+        values = json.loads(result.stdout)["services"]["api"]["environment"]
+        if not isinstance(values, dict):
+            raise ValueError("Missing API environment mapping")
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        fail("Could not resolve the production API environment with Docker Compose")
+        return None
+    ok("docker-compose.production.yml validates; checking the effective API environment")
+    return {key: str(value) if value is not None else "" for key, value in values.items()}
+
+
 def main() -> int:
+    ERRORS.clear()
+    WARNINGS.clear()
     print("Triven Cinema Hostinger VPS production preflight")
     print(f"Project: {ROOT}")
 
@@ -91,6 +184,10 @@ def main() -> int:
         else:
             ok(".env permissions are private")
 
+    effective_env = resolved_compose_environment()
+    if effective_env is not None:
+        env = effective_env
+
     required = [
         "TRIVEN_DOMAIN",
         "MODAL_TOKEN_ID",
@@ -104,102 +201,38 @@ def main() -> int:
         else:
             fail(f"{key} is missing")
 
+    validate_production_settings(env)
     domain = env.get("TRIVEN_DOMAIN", "").strip()
-    if domain and domain != "devansh.info":
-        fail("This demo deployment is pinned to TRIVEN_DOMAIN=devansh.info")
-    if domain:
-        parsed = urlparse(domain if "://" in domain else f"https://{domain}")
-        if "://" in domain:
-            fail("TRIVEN_DOMAIN must be a hostname only, for example devansh.info (no https://)")
-        elif not parsed.hostname or parsed.hostname != domain:
-            fail("TRIVEN_DOMAIN is not a valid hostname")
-        elif hostname_resolves(domain):
+    if domain == PRODUCTION_DOMAIN:
+        if hostname_resolves(domain):
             ok(f"DNS resolves for {domain}")
         else:
             warn(f"DNS does not currently resolve for {domain}; Nginx/Certbot HTTPS cannot issue a public certificate yet")
-
-        frontend_url = env.get("FRONTEND_URL", "").rstrip("/")
-        expected_url = f"https://{domain}"
-        if frontend_url == expected_url:
-            ok("FRONTEND_URL matches TRIVEN_DOMAIN")
-        else:
-            warn(f"FRONTEND_URL should normally be {expected_url!r}")
-
-    if env.get("APP_ENV", "").lower() in {"production", "prod"}:
-        ok("APP_ENV=production")
-    else:
-        fail("APP_ENV must be production")
-
-    if env.get("DEBUG", "").lower() in {"false", "0", "no"}:
-        ok("DEBUG=false")
-    else:
-        fail("DEBUG must be false")
-
-    if not env.get("CORS_ORIGINS", "").strip():
-        ok("CORS_ORIGINS is empty for same-origin production traffic")
-    else:
-        warn("CORS_ORIGINS is set; same-origin Hostinger deployment normally does not need CORS")
-
-    if env.get("AUTH_ENABLED", "true").lower() in {"true", "1", "yes"}:
-        if env.get("TRIVEN_SECRET_KEY"):
-            ok("TRIVEN_SECRET_KEY configured for signed login sessions")
-        else:
-            fail("TRIVEN_SECRET_KEY is required when AUTH_ENABLED=true in production")
-        if env.get("AUTO_LOGIN_EMAIL", "").strip():
-            warn(
-                "AUTO_LOGIN_EMAIL is set: no sign-in, everyone shares one workspace and can spend GPU credits. "
-                "Restrict access at the proxy (VPN, IP allow-list or basic auth)."
-            )
-        demo_otp = env.get("DEMO_AUTH_SHOW_OTP", "true").lower() in {"true", "1", "yes"}
-        smtp_ready = bool(env.get("SMTP_HOST", "").strip() and env.get("SMTP_FROM", "").strip())
-        if smtp_ready:
-            ok("SMTP configured: sign-in codes are emailed")
-        if demo_otp:
-            warn("DEMO_AUTH_SHOW_OTP=true exposes the OTP in the browser; keep this only for a private demo")
-        elif not smtp_ready and not env.get("AUTO_LOGIN_EMAIL", "").strip():
-            fail("DEMO_AUTH_SHOW_OTP=false but SMTP_HOST/SMTP_FROM are empty: nobody could sign in (the API will not start)")
-        if len(env.get("TRIVEN_SECRET_KEY", "")) and len(env.get("TRIVEN_SECRET_KEY", "")) < 32:
-            warn("TRIVEN_SECRET_KEY is shorter than 32 characters")
-    else:
-        warn("AUTH_ENABLED=false leaves Studio APIs without the login gate")
 
     if env.get("VIDEO_PROVIDER") == "modal":
         ok("VIDEO_PROVIDER=modal")
     else:
         warn("VIDEO_PROVIDER is not modal")
 
-    if env.get("ENABLE_SYNC_RENDER_ENDPOINTS", "true").lower() in {"false", "0", "no"}:
-        ok("Synchronous paid render endpoints disabled")
-    else:
-        warn("ENABLE_SYNC_RENDER_ENDPOINTS should be false in production")
-
-    if shutil.which("docker"):
-        ok("docker available")
-        if command_ok("docker", "compose", "version"):
-            ok("docker compose available")
-        else:
-            fail("docker compose is unavailable")
-    else:
-        fail("docker is not installed")
-
-    compose_file = ROOT / "docker-compose.production.yml"
-    if compose_file.exists() and shutil.which("docker"):
-        if command_ok("docker", "compose", "-f", str(compose_file), "config", "-q"):
-            ok("docker-compose.production.yml validates")
-        else:
-            fail("docker-compose.production.yml failed validation; check .env values")
-
     storage = ROOT / "storage"
     storage.mkdir(parents=True, exist_ok=True)
     if os.access(storage, os.W_OK):
         ok("storage directory is writable")
+    elif storage.stat().st_uid == 10001 and stat.S_IMODE(storage.stat().st_mode) & 0o300 == 0o300:
+        # The image entrypoint hands storage to its unprivileged UID. The Docker
+        # operator need not own it on later deployments; container readiness also
+        # checks that the actual API user can write here.
+        ok("storage is writable by the container user (UID 10001)")
     else:
-        fail("storage directory is not writable")
+        fail("storage directory is not writable by the deployment or container user")
 
     free_gb = shutil.disk_usage(storage).free / (1024**3)
     try:
         minimum = float(env.get("MINIMUM_FREE_DISK_GB", "10") or 10)
+        if not math.isfinite(minimum) or minimum <= 0:
+            raise ValueError("minimum must be finite and positive")
     except ValueError:
+        fail("MINIMUM_FREE_DISK_GB must be a positive number")
         minimum = 10.0
     if free_gb >= minimum:
         ok(f"Disk free: {free_gb:.1f} GiB")
@@ -211,7 +244,7 @@ def main() -> int:
     else:
         warn("GEMINI_API_KEY is empty; multi-scene planning will use the local fallback")
 
-    billing_enabled = env.get("BILLING_ENABLED", "false").lower() in {"true", "1", "yes"}
+    billing_enabled = env.get("BILLING_ENABLED", "false").strip().lower() in TRUE_VALUES
     if billing_enabled:
         for key in ("TRIVEN_SECRET_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"):
             if env.get(key):
@@ -225,7 +258,7 @@ def main() -> int:
     else:
         ok("Billing integration is feature-gated off")
 
-    youtube_enabled = env.get("YOUTUBE_ENABLED", "false").lower() in {"true", "1", "yes"}
+    youtube_enabled = env.get("YOUTUBE_ENABLED", "false").strip().lower() in TRUE_VALUES
     if youtube_enabled:
         for key in ("TRIVEN_SECRET_KEY", "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"):
             if env.get(key):
@@ -244,7 +277,12 @@ def main() -> int:
         native_chunk = float(env.get("LTX_NATIVE_CHUNK_SECONDS", "10") or 10)
         max_1080 = float(env.get("MAX_1080P_SCENE_SECONDS", "30") or 30)
         max_4k = float(env.get("MAX_4K_SCENE_SECONDS", "15") or 15)
-        if native_chunk <= 0 or max_1080 < native_chunk or max_4k <= 0:
+        if (
+            not all(math.isfinite(value) for value in (native_chunk, max_1080, max_4k))
+            or native_chunk <= 0
+            or max_1080 < native_chunk
+            or max_4k <= 0
+        ):
             fail("Long-form duration profile is invalid")
         else:
             ok(f"Duration profiles configured: native chunk {native_chunk:g}s, 1080p {max_1080:g}s, 4K {max_4k:g}s")

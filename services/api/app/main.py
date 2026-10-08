@@ -126,7 +126,7 @@ async def request_context(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    if request.url.path.startswith("/api/"):
+    if request.url.path.startswith(("/api/", "/media/")):
         response.headers["Cache-Control"] = "no-store"
     quiet_poll = (
         request.method == "GET"

@@ -23,15 +23,14 @@ LABEL org.opencontainers.image.title="triven-cinema-web" \
       org.opencontainers.image.revision="${GIT_SHA}"
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
-    NEXT_PUBLIC_API_URL="" \
-    TRIVEN_INTERNAL_API_URL=http://api:8000
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
 # The official image already ships an unprivileged "node" user; own only what Next must write to.
-COPY --from=builder --chown=node:node /app/package.json ./package.json
-COPY --from=builder --chown=node:node /app/node_modules ./node_modules
-COPY --from=builder --chown=node:node /app/.next ./.next
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/public ./public
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
     CMD node -e "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-CMD ["npm", "run", "start", "--", "--hostname", "0.0.0.0", "--port", "3000"]
+CMD ["node", "server.js"]

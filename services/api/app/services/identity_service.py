@@ -84,13 +84,18 @@ def verify_element_asset_access(workspace_id: str, asset_id: str, token: str | N
 
 
 def workspace_id_from_request(request: Request) -> str | None:
-    if settings.auto_login_email.strip():
-        # Open access: one shared workspace, regardless of cookies (imported here to avoid an import cycle).
-        from app.services.auth_service import auto_login_user
+    if settings.auth_enabled or settings.auto_login_email.strip():
+        # The signed-in account is authoritative even if an old workspace cookie
+        # remains after switching accounts. Import lazily to avoid a module cycle.
+        from app.services.auth_service import auth_user_from_request
 
-        shared = auto_login_user()
-        if shared:
-            return str(shared["workspace_id"])
+        user = auth_user_from_request(request)
+        if user:
+            return str(user["workspace_id"])
+        if settings.is_production:
+            # A standalone workspace cookie must not outlive the login session
+            # and continue authorizing private generated media.
+            return None
     # Production identity remains HttpOnly-cookie based. During split-origin local
     # development (for example localhost:3000 -> 127.0.0.1:8000), browsers may
     # suppress SameSite cookies. A signed header fallback keeps the same identity

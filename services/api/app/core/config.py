@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -113,9 +114,8 @@ class Settings(BaseSettings):
     continuity_qc_timeout_seconds: float = 12.0
     continuity_qc_max_frames: int = 5
 
-    # Demo account login. The current devansh.info demo intentionally returns the
-    # generated OTP to the browser so testers can sign in without an email provider.
-    # Set DEMO_AUTH_SHOW_OTP=false before treating this as production authentication.
+    # Local demo login can return the OTP without an email provider. Production
+    # refuses to start until this is disabled and SMTP delivery is configured.
     auth_enabled: bool = True
     demo_auth_show_otp: bool = True
     auth_otp_ttl_seconds: int = 600
@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     auth_session_days: int = 30
     # Open access: when set, nobody signs in. Every visitor is the one account with this email and lands
     # straight in the studio. They all share one workspace (elements, projects, renders) and anyone who can
-    # reach the URL can spend GPU credits. Leave empty to require the email sign-in.
+    # reach the URL can spend GPU credits. Development only; production requires it empty.
     auto_login_email: str = ""
     # Real sign-in email delivery. Without SMTP the only way in is demo mode, which shows the code
     # in the browser and is not acceptable for a public deployment.
@@ -142,8 +142,7 @@ class Settings(BaseSettings):
     chat_history_limit: int = 100
     chat_workspace_max_bytes: int = 1_500_000
 
-    # Workspace/session signing. Required when billing or YouTube integrations
-    # are enabled in production. Never commit the production value.
+    # Workspace/session signing. Required in production. Never commit the value.
     triven_secret_key: str = ""
 
     # Stripe Checkout + credit ledger. Billing can be wired and tested while
@@ -199,28 +198,44 @@ class Settings(BaseSettings):
         warnings: list[str] = []
         if not self.triven_secret_key.strip():
             errors.append("TRIVEN_SECRET_KEY is required: it signs login sessions and workspace cookies.")
-        elif len(self.triven_secret_key.strip()) < 24:
-            warnings.append("TRIVEN_SECRET_KEY is short; use at least 32 random characters.")
+        elif len(self.triven_secret_key.strip()) < 32:
+            errors.append("TRIVEN_SECRET_KEY must contain at least 32 random characters.")
         if self.debug:
             errors.append("DEBUG must be false in production (it exposes internal error text).")
-        if self.auth_enabled and not self.auto_login_email.strip() and not self.demo_auth_show_otp and not self.smtp_configured:
-            errors.append(
-                "Login is enabled but there is no way to deliver sign-in codes: set SMTP_HOST and SMTP_FROM "
-                "(or, for a private demo only, DEMO_AUTH_SHOW_OTP=true)."
+        try:
+            frontend = urlsplit(self.frontend_url)
+            valid_frontend = (
+                frontend.scheme == "https" and bool(frontend.hostname)
+                and not frontend.username and not frontend.password
+                and frontend.path in {"", "/"} and not frontend.query and not frontend.fragment
             )
+            frontend.port  # Validate a configured port as well.
+        except ValueError:
+            valid_frontend = False
+        if not valid_frontend:
+            errors.append("FRONTEND_URL must be the public HTTPS origin, for example https://cinema.devansh.info.")
+        if not self.smtp_configured:
+            errors.append(
+                "Production sign-in needs email delivery: set SMTP_HOST and SMTP_FROM."
+            )
+        if self.smtp_security.strip().lower() not in {"starttls", "ssl"}:
+            errors.append("SMTP_SECURITY must be starttls or ssl in production to protect sign-in codes and credentials.")
         if not self.auth_enabled:
-            warnings.append("AUTH_ENABLED=false leaves every Studio API open without a login.")
-        if self.auth_enabled and self.auto_login_email.strip():
-            warnings.append(
-                "AUTO_LOGIN_EMAIL is set: there is no sign-in. Anyone who can reach this URL uses the same shared "
-                "workspace and can spend GPU credits. Put it behind a VPN/IP allow-list or basic auth, or clear it."
+            errors.append("AUTH_ENABLED must be true in production; Studio APIs require a login.")
+        if self.auto_login_email.strip():
+            errors.append(
+                "AUTO_LOGIN_EMAIL must be empty in production; open access exposes a shared workspace and GPU credits."
             )
         if self.demo_auth_show_otp:
-            warnings.append("DEMO_AUTH_SHOW_OTP=true shows the sign-in code in the browser: anyone can sign in as any email.")
+            errors.append("DEMO_AUTH_SHOW_OTP must be false in production; exposing codes allows account impersonation.")
         if self.enable_sync_render_endpoints:
-            warnings.append("ENABLE_SYNC_RENDER_ENDPOINTS=true bypasses the bounded render queue; set it to false.")
-        if "*" in self.cors_origin_list:
-            warnings.append("CORS_ORIGINS contains '*'; list the exact origins or leave it empty for same-origin traffic.")
+            errors.append("ENABLE_SYNC_RENDER_ENDPOINTS must be false in production to enforce the bounded render queue.")
+        if any("*" in origin for origin in self.cors_origin_list):
+            errors.append("CORS_ORIGINS must list exact origins or be empty for same-origin traffic; wildcards are unsafe.")
+        if self.job_workers != 1:
+            errors.append("JOB_WORKERS must be 1 for the single-VPS production job queue.")
+        if self.billing_enforce_credits and not self.billing_enabled:
+            errors.append("BILLING_ENFORCE_CREDITS=true requires BILLING_ENABLED=true.")
         if self.billing_enabled and not (self.stripe_secret_key and self.stripe_webhook_secret):
             errors.append("BILLING_ENABLED=true needs STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.")
         if not self.gemini_api_key:

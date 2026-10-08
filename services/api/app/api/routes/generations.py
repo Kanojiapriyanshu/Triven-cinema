@@ -603,6 +603,8 @@ def create_video_job(
     response: Response,
 ):
     workspace_id = ensure_workspace(request, response)
+    if payload.reference_frame_filename and not workspace_owns_generated_file(workspace_id, payload.reference_frame_filename):
+        raise HTTPException(status_code=404, detail="The reference frame was not found in this workspace.")
     tools_problem = media_tools_error()
     if tools_problem:
         raise HTTPException(status_code=503, detail=tools_problem)

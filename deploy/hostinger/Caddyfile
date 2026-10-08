@@ -1,16 +1,22 @@
-devansh.info {
+# Alternative to host Nginx: run Caddy on the VPS host for automatic HTTPS.
+# Docker publishes both upstreams on loopback only.
+cinema.devansh.info {
     encode zstd gzip
 
+    request_body {
+        max_size 500MB
+    }
+
     handle /api/* {
-        reverse_proxy api:8000
+        reverse_proxy 127.0.0.1:3337
     }
 
     handle /media/* {
-        reverse_proxy api:8000
+        reverse_proxy 127.0.0.1:3337
     }
 
     handle {
-        reverse_proxy web:3000
+        reverse_proxy 127.0.0.1:3336
     }
 
     header {

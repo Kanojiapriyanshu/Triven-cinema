@@ -127,12 +127,13 @@ class ProductionRulesForOpenAccessTests(unittest.TestCase):
     BASE = dict(
         _env_file=None, app_env="production", debug=False, triven_secret_key="x" * 40, auth_enabled=True,
         demo_auth_show_otp=False, smtp_host="", smtp_from="", enable_sync_render_endpoints=False, gemini_api_key="g",
+        frontend_url="https://cinema.devansh.info",
     )
 
-    def test_open_access_needs_no_email_setup_but_is_loudly_warned(self):
-        errors, warnings = Settings(**{**self.BASE, "auto_login_email": "studio@triven.local"}).production_problems()
-        self.assertEqual(errors, [])
-        self.assertTrue(any("AUTO_LOGIN_EMAIL" in item and "GPU" in item for item in warnings))
+    def test_production_blocks_open_access_and_requires_email_delivery(self):
+        errors, _ = Settings(**{**self.BASE, "auto_login_email": "studio@triven.local"}).production_problems()
+        self.assertTrue(any("AUTO_LOGIN_EMAIL" in item and "GPU" in item for item in errors))
+        self.assertTrue(any("SMTP_HOST" in item for item in errors))
 
     def test_without_open_access_or_email_delivery_startup_is_still_blocked(self):
         errors, _ = Settings(**self.BASE).production_problems()

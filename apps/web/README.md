@@ -14,7 +14,9 @@ The browser uses same-origin `/api` and `/media` URLs. `next.config.ts` rewrites
 
 ## Hostinger VPS production
 
-The production Docker stack builds this app with the internal API URL set to `http://api:8000`. Host Nginx terminates HTTPS and routes `devansh.info` to the loopback-only web/API container ports.
+The production Docker stack builds this app with the internal API URL set to `http://api:8000`. Host Nginx terminates HTTPS for `cinema.devansh.info` and forwards the studio to `127.0.0.1:3336` and `/api` plus `/media` to `127.0.0.1:3337`. The containers continue listening internally on web port `3000` and API port `8000`.
+
+The web image uses Next.js standalone output, includes the generated static assets and public files, and runs as the unprivileged `node` user. API rewrites are fixed at build time, so rebuild the image when changing `TRIVEN_INTERNAL_API_URL`. The build downloads Geist fonts from Google Fonts; browser requests for these fonts are served locally from the web image.
 
 ```bash
 cd ../..

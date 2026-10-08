@@ -200,7 +200,7 @@ The production target is a **Hostinger Linux VPS** running the application layer
 ./scripts/deploy_hostinger.sh
 ```
 
-The browser uses same-origin `/api` and `/media` routes through the existing host Nginx. FastAPI and Next.js bind only to loopback ports 3334/3333 and are not published directly to the internet.
+The browser uses same-origin `/api` and `/media` routes through the existing host Nginx. FastAPI and Next.js bind only to loopback ports 3337/3336 and are not published directly to the internet.
 
 For multi-instance production, move generated media/job state from local disk to object storage/Postgres before scaling horizontally.
 
@@ -208,12 +208,15 @@ For multi-instance production, move generated media/job state from local disk to
 
 ```bash
 cp .env.production.example .env      # set TRIVEN_SECRET_KEY, SMTP_*, GEMINI_API_KEY, MODAL_* ...
+chmod 600 .env
 python3 scripts/production_preflight.py
-docker compose -f docker-compose.production.yml up -d --build
+./scripts/deploy_hostinger.sh --skip-public-check  # first boot, before TLS setup
+# Install Nginx and issue the certificate using deploy/hostinger/README.md.
+./scripts/status_hostinger.sh
 ```
 
-The API refuses to start in production with an unsafe configuration (no signing secret, `DEBUG=true`, no way to deliver
-sign-in codes). Containers run as an unprivileged user, ship health checks, and CI builds and smoke-tests both images on
+The API refuses to start in production with an unsafe configuration (weak signing secret, debug enabled, shared auto-login,
+visible demo codes, missing encrypted SMTP, or unbounded synchronous renders). Containers run as an unprivileged user, ship health checks, and CI builds and smoke-tests both images on
 every push. See **`docs/PRODUCTION.md`** for the full runbook (Modal worker deploy, start frames, backups, rollback,
 security notes and the pre-release checklist).
 
@@ -282,7 +285,7 @@ Production behavior:
 
 - Host Nginx is the only public-facing HTTP service for this deployment.
 - FastAPI and Next.js stay on the private Docker network.
-- `/api/*` and `/media/*` are routed by host Nginx to FastAPI on 127.0.0.1:3334; all other traffic goes to Next.js on 127.0.0.1:3333.
+- `/api/*` and `/media/*` are routed by host Nginx to FastAPI on 127.0.0.1:3337; all other traffic goes to Next.js on 127.0.0.1:3336.
 - Modal authentication uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the VPS `.env`.
 - Paid render jobs remain bounded (`JOB_WORKERS=1`, `JOB_MAX_PENDING=3` by default).
 - Generated media is served through a signed-workspace ownership check; jobs SQLite, billing/integration state, metrics and backups stay private.
@@ -296,9 +299,9 @@ Start with:
 ```bash
 cp .env.production.example .env
 chmod 600 .env
-# Fill TRIVEN_DOMAIN, Gemini/Modal credentials and provider settings.
+# Fill TRIVEN_SECRET_KEY, SMTP settings, and Gemini/Modal credentials.
 python3 scripts/production_preflight.py
-./scripts/deploy_hostinger.sh
+./scripts/deploy_hostinger.sh  # after first-time DNS/TLS setup
 ./scripts/status_hostinger.sh
 ```
 
@@ -308,7 +311,7 @@ Full setup, DNS, firewall, deployment, logs, updates and backup guidance:
 deploy/hostinger/README.md
 ```
 
-**Do not publish ports 3000 or 8000 on the VPS firewall.** Only SSH, HTTP and HTTPS should be publicly reachable.
+**Do not publish ports 3336, 3337, 3000, or 8000 on the VPS firewall.** Only SSH, HTTP and HTTPS should be publicly reachable.
 
 ## Character continuity for multi-scene stories
 
@@ -322,7 +325,7 @@ Continuity modes:
 
 For a 45-second demo, use **9 scenes x 5 seconds**. The UI supports up to 10 storyboard scenes.
 
-The demo production domain is currently pinned to **https://devansh.info**. Host Nginx, production environment examples, preflight checks, and Hostinger health checks all target that hostname.
+The production domain is configured as **https://cinema.devansh.info**. Host Nginx, production environment examples, preflight checks, and Hostinger health checks all target that hostname.
 
 
 ## AI video factory / billing / YouTube

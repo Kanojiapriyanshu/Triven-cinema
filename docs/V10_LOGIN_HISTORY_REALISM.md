@@ -4,7 +4,7 @@
 
 ### 1. Demo email + OTP login
 
-Cinema Studio now has an account gate. A user enters an email, the API creates a cryptographically random six-digit OTP, and demo mode displays that OTP in the login screen so the current `devansh.info` demo does not need an email provider.
+Cinema Studio has an account gate. A user enters an email and the API creates a cryptographically random six-digit OTP. This document describes the earlier private demo, where the code appeared in the login screen. Production at `cinema.devansh.info` now requires real SMTP delivery and rejects demo mode; use [the production runbook](PRODUCTION.md) for deployment.
 
 The OTP is stored only as an HMAC digest, expires, has a bounded attempt count, and is exchanged for an HttpOnly signed session cookie. A returning email maps to the same stable workspace, which means Elements, billing/integration state, generated assets, and chat history remain attached to the account.
 
@@ -51,7 +51,7 @@ CHAT_HISTORY_LIMIT=100
 CHAT_WORKSPACE_MAX_BYTES=1500000
 ```
 
-For the current private demo, keep `DEMO_AUTH_SHOW_OTP=true`. For a public launch, turn it off and add a real delivery provider.
+Use `DEMO_AUTH_SHOW_OTP=true` only for local development. Production requires `false` and a real SMTP delivery provider.
 
 ## Modal redeploy required
 
