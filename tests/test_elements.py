@@ -212,7 +212,9 @@ class ElementServiceTests(unittest.TestCase):
             with Image.open(path).convert("RGB") as image:
                 colors = {color for _, color in (image.getcolors(maxcolors=image.width * image.height) or [])}
                 self.assertIn((255, 0, 0), colors)
-                self.assertIn((0, 0, 255), colors)
+                # A solo presenter must use ONE clean face portrait rather than
+                # a split-screen face/profile contact sheet for IC-LoRA.
+                self.assertNotIn((0, 0, 255), colors)
                 self.assertNotIn((0, 255, 0), colors)
 
     def test_signed_asset_url_loads_without_workspace_header_or_cookie(self):

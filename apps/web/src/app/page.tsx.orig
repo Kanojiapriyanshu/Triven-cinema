@@ -1960,7 +1960,7 @@ export default function Home() {
                   {mode === "factory" ? (
                     <>
                     <Control label="Final runtime"><select className="studio-inspector-control" value={factoryTargetSeconds} onChange={(e) => handleFactoryTargetChange(Number(e.target.value))}>{FACTORY_TARGETS.map((value) => <option key={value} value={value}>{value < 60 ? `${value} seconds` : `${value / 60} minute${value === 60 ? "" : "s"}`}</option>)}</select></Control>
-                    <div className="-mt-1 text-[10px] leading-5 text-[var(--text-muted)]">Runtime is always your choice. Up to 30s can remain a single 1080p creator shot; longer videos are built from continuity-locked scenes.</div>
+                    <div className="-mt-1 text-[10px] leading-5 text-[var(--text-muted)]">Runtime is always your choice. Triven uses the longest safe identity-conditioned shot supported by the active worker and automatically continuity-chains the rest.</div>
                     </>
                   ) : mode === "storyboard" ? (
                     <Control label="Storyboard scenes"><select className="studio-inspector-control" value={sceneCount} onChange={(e) => setSceneCount(Number(e.target.value))}>{[2,3,4,6,8,10,12,16,20].map((value) => <option key={value} value={value}>{value} scenes</option>)}</select></Control>

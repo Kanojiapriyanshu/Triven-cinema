@@ -772,6 +772,14 @@ def build_reference_sheet(bindings: list[ResolvedElementBinding], output_path: P
     cell_h = height // rows
 
     for index, binding in enumerate(bindings):
+        # An identity-only solo presenter needs ONE reference portrait, not a
+        # side-by-side multi-view contact sheet. The latter can be reproduced as
+        # a split-screen artifact when Ingredients conditioning is strong.
+        if count == 1 and binding.type == "character" and binding.wardrobe_policy == "prompt":
+            assets = _reference_assets_for_panel(binding)
+            if assets:
+                _paste_face_priority_crop(canvas, assets[0][0], (4, 4, width - 4, height - 4))
+            break
         col = index % columns
         row = index // columns
         left = col * cell_w

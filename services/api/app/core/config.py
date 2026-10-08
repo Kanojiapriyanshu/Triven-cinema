@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     # External QC is advisory infrastructure. A provider outage / 429 / timeout must
     # never discard an already rendered LTX clip. Real QC failures still remain strict.
     factory_qc_fail_open_on_unavailable: bool = True
+    # Deliver a reviewable file after genuine QC rejection, too. Failed QC stays
+    # visible as qc_passed=False and prevents automatic YouTube publishing.
+    # Set false to retain the legacy strict behavior (delete/reject on QC failure).
+    factory_preserve_on_qc_failure: bool = True
 
     # Continuity/cardinality guard. "auto" requests use this visual QC gate when
     # Gemini is configured; QC failures can trigger a bounded regeneration before

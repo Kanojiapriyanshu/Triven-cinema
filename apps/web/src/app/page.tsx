@@ -2161,9 +2161,18 @@ export default function Home() {
             <Stat label="Delivery" value={qualityLabel(factoryResult.quality)} detail={`${factoryResult.width ?? "?"}×${factoryResult.height ?? "?"} · ${factoryResult.audio_mode}`} />
             <Stat label="Planner" value={factoryResult.planner_source} detail={`${factoryResult.entity_locks.length} entity lock${factoryResult.entity_locks.length === 1 ? "" : "s"}`} />
             <Stat label="Elements" value={factoryResult.elements_used.length ? String(factoryResult.elements_used.length) : "None"} detail={factoryResult.elements_used.length ? `${factoryResult.elements_used.join(", ")} · ${factoryResult.element_reference_mode || "reference"}` : "Prompt-only generation"} />
-            <Stat label="Continuity QC" value={factoryResult.continuity_qc_passed === true ? "Passed" : factoryResult.continuity_qc_passed === false ? "Warning" : "Guarded"} detail={`${factoryResult.continuity_regenerations} auto-regeneration${factoryResult.continuity_regenerations === 1 ? "" : "s"}`} />
+            <Stat label="Continuity QC" value={factoryResult.continuity_qc_passed === true ? "Passed" : factoryResult.continuity_qc_passed === false ? "Failed — review" : "Guarded"} detail={`${factoryResult.continuity_regenerations} auto-regeneration${factoryResult.continuity_regenerations === 1 ? "" : "s"}`} />
             <Stat label="Audio QC" value={factoryResult.audio_qc_passed === true ? "Passed" : factoryResult.audio_qc_passed === false ? "Failed" : "Guarded"} detail={`${factoryResult.audio_retake_count} LTX audio retake${factoryResult.audio_retake_count === 1 ? "" : "s"}`} />
           </section>
+        )}
+
+        {factoryResult && (factoryResult.continuity_warnings.length > 0 || factoryResult.audio_warnings.length > 0) && (
+          <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--panel-bg)] px-4 py-3 text-xs text-[var(--text-muted)]">
+            <p className="font-semibold text-[var(--text)]">Generation completed with quality warnings — review before sharing</p>
+            {factoryResult.continuity_warnings.concat(factoryResult.audio_warnings).slice(0, 4).map((warning, index) => (
+              <p key={index} className="mt-1 leading-5">{warning}</p>
+            ))}
+          </div>
         )}
 
         {result && mode === "storyboard" && (

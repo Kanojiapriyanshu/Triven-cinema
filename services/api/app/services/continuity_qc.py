@@ -152,6 +152,7 @@ QC RULES:
 - Inspect the EARLIEST generated sample especially carefully. A bad first seconds phase, frozen reference hold, identity redesign, or abrupt wardrobe mutation is a failure even if later samples recover.
 - Ignore tiny unrelated background strangers unless they duplicate a locked recurring subject.
 - Be conservative about ordinary motion blur, pose changes, expression changes, lighting, and camera perspective. Only flag meaningful identity or artifact failures.
+- CRITICAL SOURCE SEPARATION: CANONICAL ELEMENT REFERENCES and PREVIOUS APPROVED CONTINUITY REFERENCE are INPUT photographs, NOT frames of the generated video. They may themselves show multiple views, a collage, or a reference sheet. NEVER report split-screen, duplicate subjects, static frames, or identity drift based on those INPUT images. Only GENERATED CLIP SAMPLE images are evidence of a generated-video artifact. If a sampled generated frame truly contains a split-screen/contact sheet, report it; otherwise do not.
 
 Return ONLY JSON with exactly this shape:
 {{
@@ -192,7 +193,8 @@ Return ONLY JSON with exactly this shape:
             parts.append(_image_part(reference_frame_path))
         if canonical_refs or has_reference:
             parts.append({"text": "GENERATED CLIP SAMPLES:"})
-        for frame in frames:
+        for sample_index, frame in enumerate(frames, start=1):
+            parts.append({"text": f"GENERATED CLIP SAMPLE {sample_index}/{len(frames)} — judge actual video defects in this image only:"})
             parts.append(_image_part(frame))
 
         try:

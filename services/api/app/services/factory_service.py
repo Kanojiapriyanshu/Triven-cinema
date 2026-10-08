@@ -133,6 +133,15 @@ def _qc_unavailable_is_fatal(strict_requested: bool) -> bool:
     return bool(strict_requested and not settings.factory_qc_fail_open_on_unavailable)
 
 
+def _qc_rejection_is_fatal(strict_requested: bool) -> bool:
+    """Preserve an expensive LTX render after a QC rejection unless explicitly disabled.
+
+    An actual visual/audio QC rejection still sets `*_qc_passed=False` and surfaces
+    a warning. Retaining a review clip does not mean the scene was approved.
+    """
+    return bool(strict_requested and not settings.factory_preserve_on_qc_failure)
+
+
 def run_factory_generation(
     request: FactoryGenerationRequest,
     *,
@@ -414,13 +423,22 @@ def run_factory_generation(
                     continue
 
                 message = f"Scene {index + 1} continuity QC failed after {attempts} attempt(s): {last_qc_note}"
-                if effective_qc_mode == "strict":
+                if _qc_rejection_is_fatal(effective_qc_mode == "strict"):
                     path.unlink(missing_ok=True)
                     raise RuntimeError(message)
+                # Exhausted the regeneration budget. Keep the last successfully
+                # rendered clip as an explicitly UNAPPROVED review copy, rather
+                # than throwing away its GPU output and failing the entire film.
                 all_qc_passed = False
-                continuity_warnings.append(message)
+                continuity_warnings.append(message + " Video retained for review; visual QC did not pass.")
                 accepted_result = result
                 accepted_path = path
+                if progress:
+                    progress(
+                        "rendering",
+                        min(79, base_progress + max(2, 62 // max(1, scene_count))),
+                        f"Scene {index + 1}/{scene_count} · QC failed; retaining video for review",
+                    )
 
             if accepted_result is None or accepted_path is None:
                 raise RuntimeError(f"Scene {index + 1} did not produce an accepted render.")
@@ -507,20 +525,20 @@ def run_factory_generation(
                         elif not audio_qc.passed:
                             all_audio_qc_passed = False
                             final_note = audio_qc.note or "; ".join(audio_qc.violations) or audio_note
-                            if strict_audio:
+                            if _qc_rejection_is_fatal(strict_audio):
                                 accepted_path.unlink(missing_ok=True)
                                 raise RuntimeError(
                                     f"Scene {index + 1} audio still failed after LTX Retake: {final_note}"
                                 )
-                            audio_warnings.append(f"Scene {index + 1}: {final_note}")
+                            audio_warnings.append(f"Scene {index + 1}: {final_note}. Video retained for review; audio QC did not pass.")
                     else:
                         all_audio_qc_passed = False
-                        if strict_audio:
+                        if _qc_rejection_is_fatal(strict_audio):
                             accepted_path.unlink(missing_ok=True)
                             raise RuntimeError(
                                 f"Scene {index + 1} audio QC failed and audio Retake is unavailable: {audio_note}"
                             )
-                        audio_warnings.append(f"Scene {index + 1}: {audio_note}")
+                        audio_warnings.append(f"Scene {index + 1}: {audio_note}. Video retained for review; audio QC did not pass.")
                 elif audio_qc.skipped and audio_qc.note:
                     audio_warnings.append(f"Scene {index + 1}: {audio_qc.note}")
 
@@ -561,7 +579,14 @@ def run_factory_generation(
         youtube_video_id: str | None = None
         youtube_url: str | None = None
         youtube_privacy: str | None = None
-        if request.publish_to_youtube:
+        # Never automatically publish a QC-rejected video. The master remains
+        # available for download and explicit human review instead.
+        unapproved_qc = (qc_attempted and not all_qc_passed) or (audio_qc_attempted and not all_audio_qc_passed)
+        if request.publish_to_youtube and unapproved_qc:
+            continuity_warnings.append(
+                "Automatic YouTube publishing skipped because visual or audio QC failed. Review the saved video first."
+            )
+        if request.publish_to_youtube and not unapproved_qc:
             if progress:
                 progress("publishing", 95, "Uploading the finished master to the connected YouTube channel...")
             published = upload_video(
