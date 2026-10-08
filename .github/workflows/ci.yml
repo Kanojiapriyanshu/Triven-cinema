@@ -98,7 +98,10 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8000/api/v1/health/ready | grep -q '"status":"ready"'
-          test "$(docker exec api id -u)" != "0"
+          # `docker exec` starts a NEW process as the image default user (root). The API itself is PID 1 and
+          # must be unprivileged: /proc/1 is owned by the user the process runs as.
+          echo "API process runs as: $(docker exec api stat -c %U /proc/1)"
+          test "$(docker exec api stat -c %U /proc/1)" = "triven"
           docker exec api ffprobe -version | head -1
           # Studio APIs are behind the login gate.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/elements)" = "401"
