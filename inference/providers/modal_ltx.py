@@ -8,6 +8,7 @@ import modal
 from dotenv import load_dotenv
 
 from inference.providers.base import VideoGenerationResult, VideoProvider
+from inference.providers.finishing import finish_video
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -32,11 +33,29 @@ class ModalLTXProvider(VideoProvider):
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def _write_video(video_bytes: bytes, prefix: str) -> Path:
+    def _write_video(
+        video_bytes: bytes,
+        prefix: str,
+        *,
+        finish: bool = True,
+        tame_highlights: bool = True,
+    ) -> Path:
         filename = f"{prefix}-{uuid.uuid4().hex}.mp4"
         destination = GENERATED_DIR / filename
         temporary = destination.with_suffix(".mp4.part")
         temporary.write_bytes(video_bytes)
+        # Stabilise exposure and tame highlight bloom before the clip is stored.
+        # Fail-open: if finishing is off or errors, the raw clip is kept as-is.
+        if finish:
+            try:
+                finished = finish_video(temporary, tame_highlights=tame_highlights)
+            except Exception:  # pragma: no cover - defensive; finish_video already guards itself
+                LOGGER.exception("Video finishing raised; storing the raw clip")
+                finished = None
+            if finished is not None:
+                finished.replace(destination)
+                temporary.unlink(missing_ok=True)
+                return destination
         temporary.replace(destination)
         return destination
 
@@ -158,7 +177,9 @@ class ModalLTXProvider(VideoProvider):
         video_bytes = result.get("video_bytes")
         if not video_bytes:
             raise RuntimeError("Modal audio Retake returned no video bytes.")
-        destination = self._write_video(video_bytes, "ltx-audio-retake")
+        # Retake freezes the picture and only regenerates audio, so there is no new
+        # visual artefact to correct - leave the already-finished frames untouched.
+        destination = self._write_video(video_bytes, "ltx-audio-retake", finish=False)
         wall_elapsed = time.perf_counter() - started
         elapsed = float(result.get("render_seconds") or 0.0) or wall_elapsed
         return VideoGenerationResult(
@@ -210,7 +231,9 @@ class ModalLTXProvider(VideoProvider):
         video_bytes = result.get("video_bytes")
         if not video_bytes:
             raise RuntimeError("Modal upscale returned no video bytes.")
-        destination = self._write_video(video_bytes, "ltx-upscale")
+        # The upscaled Draft already had its highlights managed when the Draft was
+        # finished; only re-stabilise exposure so a second roll-off cannot compound.
+        destination = self._write_video(video_bytes, "ltx-upscale", tame_highlights=False)
         wall_elapsed = time.perf_counter() - started
         return VideoGenerationResult(
             filename=destination.name,

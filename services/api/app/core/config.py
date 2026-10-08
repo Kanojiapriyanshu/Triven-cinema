@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     factory_motion_guard_enabled: bool = True
     motion_guard_min_mean_diff: float = 0.8
 
+    # Rewrite cinematography wording (soft/key light, shallow depth of field, film look,
+    # backlight, lens flare, golden hour, glow/haze) that LTX over-renders into a blown
+    # hazy bloom over the subject, and append an even-exposure constraint to every scene.
+    lighting_hygiene_enabled: bool = True
+
     # Continuity/cardinality guard. "auto" requests use this visual QC gate when
     # Gemini is configured; QC failures can trigger a bounded regeneration before
     # a scene is accepted into the factory timeline.

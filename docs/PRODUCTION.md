@@ -109,6 +109,20 @@ image model answers HTTP 429 (the app then explains this). Without it, creators 
 Draft and Full HD are different generation engines. "Upscale to Full HD" refines the approved Draft, so the picture,
 motion and voice stay the same; re-rendering at 1080p produces a different video.
 
+### Finishing pass (exposure stability + highlight bloom)
+
+Every new clip is run through a short ffmpeg pass on the **app host** (CPU, no GPU, no Modal redeploy) before it is
+stored, correcting two artefacts of raw LTX output:
+
+- **brightness that drifts up and down** across the clip - `deflicker` holds the exposure steady;
+- **highlight bloom on bright skin/faces** - a gentle roll-off compresses only the top of the tonal range (mid-tones
+  and skin are untouched); the audio is stream-copied, so voice and timing are identical.
+
+It is fail-open: if ffmpeg is missing or errors, the raw clip is kept rather than losing a paid render. Tune it with
+`TRIVEN_VIDEO_FINISHING` (on/off), `TRIVEN_VIDEO_DEFLICKER_SIZE` (window in frames, up to 129 ≈ 5s for a shot that must
+hold one exposure; `0` disables) and `TRIVEN_VIDEO_HIGHLIGHT_ROLLOFF` (`0.0`–`0.4`; `0` disables). Changes take effect on
+the next clip after an API restart (check running jobs first). The Retake path is skipped because it only touches audio.
+
 ## 5. Security notes
 
 - Containers run as an unprivileged user with `no-new-privileges`; the API and web ports are published to loopback only.

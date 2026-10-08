@@ -1,7 +1,13 @@
 import re
 from collections.abc import Iterable
 
+from app.core.config import settings
 from app.schemas.generation import EntityLock
+from app.services.lighting_hygiene import (
+    BACKGROUND_AUTHORITY_NOTE,
+    EXPOSURE_INTEGRITY_NOTE,
+    normalize_lighting,
+)
 
 
 CONTINUITY_HEADER = "TRIVEN CONTINUITY LOCK"
@@ -316,7 +322,13 @@ def compose_render_integrity_prompt(
     if marker in prompt:
         return prompt
 
+    hygiene_notes: list[str] = []
+    if settings.lighting_hygiene_enabled:
+        prompt, _changes = normalize_lighting(prompt)
+        hygiene_notes = [EXPOSURE_INTEGRITY_NOTE, BACKGROUND_AUTHORITY_NOTE]
+
     blocks = [prompt, marker]
+    blocks.extend(hygiene_notes)
     blocks.append(
         "Preserve one coherent physical version of every subject and object from first frame to last. "
         "No duplicate face/body, identity swap, facial melting, asymmetric eye drift, extra teeth, extra fingers or limbs, "
