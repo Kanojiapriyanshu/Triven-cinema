@@ -49,7 +49,8 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run lint
-      - run: npx tsc --noEmit
+      # Next generates global route types (LayoutProps, ...) on demand; a clean checkout does not have them yet.
+      - run: npx next typegen && npx tsc --noEmit
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
