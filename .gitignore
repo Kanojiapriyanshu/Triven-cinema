@@ -36,3 +36,19 @@ storage/logs/*
 storage/backups/*
 storage/billing/*
 storage/integrations/*
+
+# Runtime data: accounts, chats, uploaded photos and databases never belong in git.
+storage/auth/*
+storage/chats/*
+storage/elements/*
+storage/*.sqlite3
+storage/**/*.sqlite3-wal
+storage/**/*.sqlite3-shm
+
+# Local tooling
+.claude/
+.next-e2e/
+apps/web/.next-e2e/
+*.log
+
+apps/web/.next-*/

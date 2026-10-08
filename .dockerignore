@@ -16,3 +16,18 @@ storage/benchmarks
 storage/logs
 
 storage/backups
+
+# Never bake runtime data, secrets or local tooling into an image
+storage/auth
+storage/chats
+storage/elements
+storage/billing
+storage/integrations
+.claude
+.github
+tests
+docs
+**/*.sqlite3
+**/*.sqlite3-wal
+**/*.sqlite3-shm
+apps/web/.next-e2e
