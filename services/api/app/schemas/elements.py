@@ -8,6 +8,10 @@ ElementStatus = Literal["active", "archived"]
 ElementReferenceMode = Literal["identity", "start_frame"]
 ElementWardrobePolicy = Literal["prompt", "reference"]
 ElementAssetRole = Literal["primary", "face", "full_body", "profile", "costume", "object", "location", "style", "support"]
+# "auto": a Character that is only tagged at the end of the prompt (never described in the
+# shot) is kept out of the identity sheet when another Character is clearly the subject.
+# "cast": the creator explicitly wants this Character in the shot.
+ElementCastRole = Literal["auto", "cast"]
 
 
 class ElementAssetResponse(BaseModel):
@@ -75,6 +79,7 @@ class ElementBinding(BaseModel):
     wardrobe_policy: ElementWardrobePolicy = "prompt"
     strength: float = Field(default=1.0, ge=0.0, le=1.0)
     apply_to_all_scenes: bool = False
+    cast_role: ElementCastRole = "auto"
 
     @field_validator("handle")
     @classmethod
@@ -93,6 +98,7 @@ class ResolvedElementBinding(BaseModel):
     wardrobe_policy: ElementWardrobePolicy
     strength: float
     apply_to_all_scenes: bool
+    cast_role: ElementCastRole = "auto"
     primary_asset_path: str
     primary_asset_url: str
     reference_asset_paths: list[str] = Field(default_factory=list)

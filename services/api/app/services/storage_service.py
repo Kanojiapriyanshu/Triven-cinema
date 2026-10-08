@@ -45,3 +45,18 @@ def resolve_generated_asset(filename: str, *, extensions: set[str]) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"Generated asset not found: {name}")
     return path
+
+
+def missing_media_tools() -> list[str]:
+    """Names of ffmpeg tools a render needs after the GPU step and that are not on PATH."""
+    return [name for name in ("ffmpeg", "ffprobe") if shutil.which(name) is None]
+
+
+def media_tools_error() -> str | None:
+    missing = missing_media_tools()
+    if not missing:
+        return None
+    return (
+        f"{' and '.join(missing)} not found on PATH. Rendering is blocked before it starts so a paid GPU job "
+        "is not wasted on a video that cannot be finished. Install FFmpeg (it ships ffmpeg and ffprobe) and restart the API."
+    )

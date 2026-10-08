@@ -106,8 +106,8 @@ class CharacterContinuityTests(unittest.TestCase):
         self.assertEqual(safe_continuity_id("../../story / demo"), "story-demo")
 
     def test_storyboard_seed_does_not_drift_between_scenes(self):
-        page = (ROOT / "apps/web/src/app/page.tsx").read_text()
-        routes = (ROOT / "services/api/app/api/routes/generations.py").read_text()
+        page = (ROOT / "apps/web/src/app/page.tsx").read_text(encoding="utf-8")
+        routes = (ROOT / "services/api/app/api/routes/generations.py").read_text(encoding="utf-8")
         self.assertNotIn("seed: seed +", page)
         self.assertNotIn("seed=request.seed +", routes)
         self.assertIn("reference_frame_filename", page)

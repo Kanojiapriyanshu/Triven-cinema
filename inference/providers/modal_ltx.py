@@ -22,11 +22,13 @@ class ModalLTXProvider(VideoProvider):
     name = "modal-ltx-2.5"
     supports_native_long_video = True
     supports_audio_retake = True
+    supports_upscale = True
 
     def __init__(self):
         self.app_name = os.getenv("MODAL_APP_NAME", "triven-cinema-ltx")
         self.function_name = os.getenv("MODAL_FUNCTION_NAME", "generate_video")
         self.audio_retake_function_name = os.getenv("MODAL_AUDIO_RETAKE_FUNCTION_NAME", "retake_audio")
+        self.upscale_function_name = os.getenv("MODAL_UPSCALE_FUNCTION_NAME", "upscale_video")
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
@@ -172,4 +174,56 @@ class ModalLTXProvider(VideoProvider):
             reference_conditioned=True,
             chunk_count=1,
             render_mode="audio-retake",
+        )
+
+    def upscale(
+        self,
+        *,
+        video_path: str,
+        width: int,
+        height: int,
+        duration_seconds: float,
+        seed: int,
+    ) -> VideoGenerationResult:
+        source = Path(video_path)
+        if not source.exists():
+            raise FileNotFoundError(f"Draft video to upscale not found: {source.name}")
+
+        started = time.perf_counter()
+        try:
+            remote_function = modal.Function.from_name(self.app_name, self.upscale_function_name)
+            result = remote_function.remote(
+                video_bytes=source.read_bytes(),
+                width=int(width),
+                height=int(height),
+                duration_seconds=float(duration_seconds),
+                seed=int(seed),
+            )
+        except Exception as exc:
+            LOGGER.exception("Modal LTX upscale failed app=%s function=%s", self.app_name, self.upscale_function_name)
+            detail = (str(exc) or repr(exc)).strip().replace("\n", " ")[:500]
+            raise RuntimeError(
+                "Modal upscale failed. If this is the first upscale, redeploy the worker with "
+                f"`modal deploy modal/app.py` so `{self.upscale_function_name}` exists. Remote error: {detail}"
+            ) from exc
+
+        video_bytes = result.get("video_bytes")
+        if not video_bytes:
+            raise RuntimeError("Modal upscale returned no video bytes.")
+        destination = self._write_video(video_bytes, "ltx-upscale")
+        wall_elapsed = time.perf_counter() - started
+        return VideoGenerationResult(
+            filename=destination.name,
+            path=str(destination),
+            seed=int(result.get("seed", seed)),
+            render_details=str(result.get("render_details") or "Draft upscaled with Refine Details"),
+            render_seconds=float(result.get("render_seconds") or 0.0) or wall_elapsed,
+            prompt="",
+            provider=self.name,
+            gpu=str(result.get("gpu") or "Modal GPU"),
+            wall_seconds=wall_elapsed,
+            reference_conditioned=True,
+            chunk_count=1,
+            render_mode="upscale",
+            detail_refined=True,
         )

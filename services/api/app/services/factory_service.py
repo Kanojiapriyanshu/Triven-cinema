@@ -7,7 +7,12 @@ from app.core.config import settings
 from app.schemas.factory import FactoryGenerationRequest, FactoryGenerationResponse
 from app.schemas.generation import MediaInfo
 from app.services.audio_qc import evaluate_scene_audio
-from app.services.continuity_service import compose_continuity_prompt, compose_render_integrity_prompt
+from app.services.continuity_service import (
+    append_continuation_anchor,
+    append_motion_retry_note,
+    compose_continuity_prompt,
+    compose_render_integrity_prompt,
+)
 from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
 from app.services.element_service import (
@@ -15,14 +20,18 @@ from app.services.element_service import (
     build_reference_sheet,
     canonical_reference_paths as element_canonical_reference_paths,
     compile_element_prompt,
+    compile_hero_prompt,
     elements_for_scene,
+    park_tag_only_characters,
+    parked_character_warning,
     resolve_element_bindings,
 )
 from app.services.long_render_service import render_long_clip
 from app.services.media_probe import probe_media
+from app.services.motion_qc import measure_motion
 from app.services.metrics_service import estimate_gpu_cost, record_generation_metric
 from app.services.scene_planner import create_prompt_only_plan, create_scene_plan
-from app.services.storage_service import ensure_minimum_free_disk
+from app.services.storage_service import ensure_minimum_free_disk, resolve_generated_asset
 from app.services.video_combiner import combine_videos, extract_continuity_frame
 from app.services.video_profiles import source_render_dimensions, validate_factory_scene_duration
 from app.services.youtube_service import upload_video
@@ -159,6 +168,12 @@ def run_factory_generation(
         resolved_element_bindings = resolve_element_bindings(workspace_id, request.element_bindings)
     except ElementError as exc:
         raise ValueError(str(exc)) from exc
+    resolved_element_bindings, parked_characters = park_tag_only_characters(request.prompt, resolved_element_bindings)
+    hero_mode = bool(request.hero_frame_filename)
+    if hero_mode:
+        resolved_element_bindings = [
+            item.model_copy(update={"reference_mode": "identity"}) for item in resolved_element_bindings
+        ]
     if resolved_element_bindings and request.provider != "modal":
         raise ValueError("Reusable Elements currently require the Modal LTX-2.5 provider.")
     if request.realism_profile == "identity_max" and not any(
@@ -247,8 +262,13 @@ def run_factory_generation(
     any_detail_refined = False
     gpu: str | None = None
     previous_frame: Path | None = None
+    continued_from_frame = False
+    start_frame_elements_used: set[str] = set()
+    final_continuity_frame: Path | None = None
     continuity_frames: list[Path] = []
     continuity_warnings: list[str] = []
+    if parked_characters:
+        continuity_warnings.append(parked_character_warning(parked_characters))
     continuity_regenerations = 0
     qc_attempted = False
     all_qc_passed = True
@@ -260,6 +280,30 @@ def run_factory_generation(
     element_reference_modes: set[str] = set()
     temporary_element_sheets: list[Path] = []
 
+    if hero_mode:
+        if request.continuity_mode != "strict":
+            raise ValueError("Animating a start frame requires Strict continuity.")
+        try:
+            previous_frame = resolve_generated_asset(
+                request.hero_frame_filename,
+                extensions={".png", ".jpg", ".jpeg", ".webp"},
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise ValueError(f"The approved start frame is no longer available: {exc}") from exc
+        element_reference_modes.add("start_frame_image")
+
+    if request.start_frame_filename:
+        if request.continuity_mode != "strict":
+            raise ValueError("Continuing from a previous shot requires Strict continuity.")
+        try:
+            previous_frame = resolve_generated_asset(
+                request.start_frame_filename,
+                extensions={".png", ".jpg", ".jpeg", ".webp"},
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise ValueError(f"The previous shot's last frame is no longer available: {exc}") from exc
+        continued_from_frame = True
+
     try:
         for index, scene in enumerate(plan.scenes):
             if index >= len(scene_durations):
@@ -268,6 +312,10 @@ def run_factory_generation(
             active_elements = elements_for_scene(scene.prompt, resolved_element_bindings)
             for binding in active_elements:
                 elements_used.add(f"@{binding.handle}")
+            named_elements = list(active_elements)
+            if hero_mode:
+                # The start frame already contains them: no reference sheet, no start-frame element.
+                active_elements = []
 
             identity_elements = [item for item in active_elements if item.reference_mode == "identity"]
             start_frame_elements = [item for item in active_elements if item.reference_mode == "start_frame"]
@@ -291,12 +339,29 @@ def run_factory_generation(
                 temporary_element_sheets.append(element_sheet_path)
                 element_reference_modes.add("ingredients")
 
-            explicit_start_frame = Path(start_frame_elements[0].primary_asset_path) if start_frame_elements else None
+            # An Element used as the "exact starting frame" opens the FIRST scene it appears in.
+            # Later scenes must continue from the previous clip's last frame; re-using the still
+            # at every scene boundary would snap the film back to the opening composition.
+            fresh_start_frames = [
+                item for item in start_frame_elements if item.element_id not in start_frame_elements_used
+            ]
+            for item in start_frame_elements:
+                start_frame_elements_used.add(item.element_id)
+            explicit_start_frame = Path(fresh_start_frames[0].primary_asset_path) if fresh_start_frames else None
+            if explicit_start_frame is not None and continued_from_frame and index == 0:
+                # The real last frame of the previous video beats a still image.
+                continuity_warnings.append(
+                    f"Continuing from the previous video's last frame; @{fresh_start_frames[0].handle} "
+                    "was used for identity only, not as the opening image."
+                )
+                explicit_start_frame = None
             scene_reference_frame = explicit_start_frame or (
                 previous_frame if request.continuity_mode == "strict" and previous_frame is not None else None
             )
             if explicit_start_frame is not None:
                 element_reference_modes.add("start_frame")
+            if continued_from_frame and index == 0:
+                element_reference_modes.add("continued_frame")
 
             base_progress = 12 + int((index / max(1, scene_count)) * 66)
 
@@ -319,6 +384,7 @@ def run_factory_generation(
             # identity, wardrobe or artifact frames.
             effective_qc_mode = request.continuity_qc_mode
 
+            motion_failures = 0
             for attempt in range(attempts):
                 locked_prompt = scene.prompt
                 if request.enhance_prompt and request.continuity_mode != "off":
@@ -342,9 +408,15 @@ def run_factory_generation(
                     retry_level=attempt,
                     qc_feedback=last_qc_note,
                 )
+                if continued_from_frame and index == 0 and not request.enhance_prompt:
+                    locked_prompt = append_continuation_anchor(locked_prompt)
+                if motion_failures:
+                    locked_prompt = append_motion_retry_note(locked_prompt)
                 locked_prompt = _audio_prompt(locked_prompt, request.audio_direction)
                 if active_elements:
                     locked_prompt = compile_element_prompt(locked_prompt, active_elements)
+                elif hero_mode:
+                    locked_prompt = compile_hero_prompt(locked_prompt, named_elements, opening=(index == 0))
 
                 if attempt > 0 and progress:
                     progress(
@@ -353,6 +425,18 @@ def run_factory_generation(
                         f"Scene {index + 1}/{scene_count} · continuity QC retry {attempt}/{attempts - 1}",
                     )
 
+                # After a frozen-still result, loosen how hard the references are enforced so the
+                # model is free to animate the subject instead of replaying the reference.
+                relax = motion_failures
+                first_frame_strength = (
+                    1.0
+                    if hero_mode or (request.realism_profile == "identity_max" and character_identity_elements)
+                    else max(request.continuity_strength, 0.95 if character_identity_elements and request.continuity_mode == "strict" else request.continuity_strength)
+                )
+                sheet_strength = (
+                    max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
+                    if use_ingredients else settings.element_ingredients_strength
+                )
                 result = render_long_clip(
                     provider=provider,
                     prompt=locked_prompt,
@@ -364,16 +448,9 @@ def run_factory_generation(
                     enhance_prompt=False,
                     render_mode=render_mode,
                     reference_image_path=str(scene_reference_frame) if scene_reference_frame is not None else None,
-                    reference_strength=(
-                        1.0
-                        if request.realism_profile == "identity_max" and character_identity_elements
-                        else max(request.continuity_strength, 0.95 if character_identity_elements and request.continuity_mode == "strict" else request.continuity_strength)
-                    ),
+                    reference_strength=max(0.6, first_frame_strength - 0.15 * relax) if relax else first_frame_strength,
                     element_reference_sheet_path=str(element_sheet_path) if element_sheet_path is not None else None,
-                    element_reference_strength=(
-                        max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
-                        if use_ingredients else settings.element_ingredients_strength
-                    ),
+                    element_reference_strength=max(0.55, sheet_strength - 0.2 * relax) if relax else sheet_strength,
                     realism_profile=request.realism_profile,
                     progress=chunk_progress,
                 )
@@ -383,6 +460,25 @@ def run_factory_generation(
                 total_wall += float(result.wall_seconds or result.render_seconds)
                 total_chunks += int(result.chunk_count or 1)
                 gpu = result.gpu or gpu
+
+                if scene_reference_frame is not None or element_sheet_path is not None:
+                    motion = measure_motion(path)
+                    if motion is not None and motion.still:
+                        last_qc_note = "Frozen still: " + motion.note
+                        if attempt < attempts - 1:
+                            continuity_regenerations += 1
+                            motion_failures += 1
+                            path.unlink(missing_ok=True)
+                            continue
+                        all_qc_passed = False
+                        qc_attempted = True
+                        continuity_warnings.append(
+                            f"Scene {index + 1}: {motion.note}. Video retained for review; add what the subject does and says, "
+                            "or lower the Element reference strength."
+                        )
+                        accepted_result = result
+                        accepted_path = path
+                        break
 
                 qc = None
                 if request.continuity_mode != "off" and effective_qc_mode != "off":
@@ -400,7 +496,7 @@ def run_factory_generation(
                         scene_prompt=locked_prompt,
                         qc_mode=effective_qc_mode,
                         reference_frame_path=scene_reference_frame,
-                        canonical_reference_paths=element_canonical_reference_paths(active_elements),
+                        canonical_reference_paths=element_canonical_reference_paths(named_elements),
                     )
                     qc_attempted = qc_attempted or not qc.skipped
                     if qc.skipped and _qc_unavailable_is_fatal(effective_qc_mode == "strict"):
@@ -554,6 +650,16 @@ def run_factory_generation(
         if not source_paths:
             raise RuntimeError("Factory produced no scene clips.")
 
+        # Keep the film's last frame so the creator can continue this exact shot later
+        # ("Continue scene"). Best effort: a missing frame must never fail a finished render.
+        if request.continuity_mode != "off":
+            candidate = GENERATED_DIR / f"continuity-{continuity_id}-final.png"
+            try:
+                extract_continuity_frame(source_paths[-1], candidate)
+                final_continuity_frame = candidate
+            except Exception:  # noqa: BLE001
+                candidate.unlink(missing_ok=True)
+
         if progress:
             progress("composing", 80, "Composing accepted scenes and synchronized audio...")
         composed = GENERATED_DIR / f"factory-source-{uuid.uuid4().hex}.mp4"
@@ -680,6 +786,8 @@ def run_factory_generation(
             audio_warnings=audio_warnings,
             elements_used=sorted(elements_used),
             element_reference_mode=("+".join(sorted(element_reference_modes)) if element_reference_modes else None),
+            continuity_frame_filename=final_continuity_frame.name if final_continuity_frame else None,
+            continuity_frame_url=f"/media/generated/{final_continuity_frame.name}" if final_continuity_frame else None,
             youtube_video_id=youtube_video_id,
             youtube_url=youtube_url,
             youtube_privacy=youtube_privacy,

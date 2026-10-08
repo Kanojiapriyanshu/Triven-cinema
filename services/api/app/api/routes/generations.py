@@ -29,7 +29,12 @@ from app.services.billing_service import (
     consume_credits,
     refund_credits,
 )
-from app.services.continuity_service import compose_continuity_prompt, compose_render_integrity_prompt, safe_continuity_id
+from app.services.continuity_service import (
+    append_motion_retry_note,
+    compose_continuity_prompt,
+    compose_render_integrity_prompt,
+    safe_continuity_id,
+)
 from app.services.continuity_qc import evaluate_scene_cardinality
 from app.services.delivery_service import prepare_delivery, quality_note
 from app.services.element_service import (
@@ -38,6 +43,8 @@ from app.services.element_service import (
     canonical_reference_paths as element_canonical_reference_paths,
     compile_element_prompt,
     elements_for_scene,
+    park_tag_only_characters,
+    parked_character_warning,
     resolve_element_bindings,
 )
 from app.services.identity_service import ensure_workspace, workspace_id_from_request
@@ -50,6 +57,7 @@ from app.services.job_service import (
 )
 from app.services.long_render_service import render_long_clip
 from app.services.media_probe import probe_media
+from app.services.motion_qc import measure_motion
 from app.services.metrics_service import (
     estimate_gpu_cost,
     record_generation_metric,
@@ -57,7 +65,7 @@ from app.services.metrics_service import (
 )
 from app.services.prompt_quality import evaluate_plan_prompt_coverage
 from app.services.scene_planner import create_scene_plan
-from app.services.storage_service import ensure_minimum_free_disk, resolve_generated_asset
+from app.services.storage_service import ensure_minimum_free_disk, media_tools_error, resolve_generated_asset
 from app.services.video_combiner import combine_videos, extract_continuity_frame
 from app.services.video_profiles import (
     duration_profile,
@@ -134,6 +142,7 @@ def _generate_video_impl(
         resolved_elements = resolve_element_bindings(workspace_id or "", request.element_bindings) if request.element_bindings else []
     except ElementError as exc:
         raise ValueError(str(exc)) from exc
+    resolved_elements, parked_characters = park_tag_only_characters(request.prompt, resolved_elements)
     active_elements = elements_for_scene(request.prompt, resolved_elements)
     if active_elements and (request.provider or settings.video_provider) != "modal":
         raise ValueError("Reusable Elements currently require the Modal LTX-2.5 provider.")
@@ -220,12 +229,15 @@ def _generate_video_impl(
     total_chunks = 0
     continuity_regenerations = 0
     continuity_warnings: list[str] = []
+    if parked_characters:
+        continuity_warnings.append(parked_character_warning(parked_characters))
     qc_attempted = False
     final_qc_passed = True
     last_qc_note = ""
     result = None
     source_path: Path | None = None
 
+    motion_failures = 0
     for attempt in range(max(0, int(request.continuity_max_retries)) + 1):
         prompt_to_render = prompt_base
         if request.continuity_mode != "off":
@@ -250,9 +262,23 @@ def _generate_video_impl(
             qc_feedback=last_qc_note,
         )
         prompt_to_render = _audio_prompt(prompt_to_render, request.audio_direction)
+        if motion_failures:
+            prompt_to_render = append_motion_retry_note(prompt_to_render)
         if active_elements:
             prompt_to_render = compile_element_prompt(prompt_to_render, active_elements)
 
+        first_frame_strength = (
+            1.0
+            if request.realism_profile == "identity_max" and character_identity_elements
+            else max(
+                request.continuity_strength,
+                0.95 if character_identity_elements and request.continuity_mode == "strict" else request.continuity_strength,
+            )
+        )
+        sheet_strength = (
+            max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
+            if use_ingredients else settings.element_ingredients_strength
+        )
         result = render_long_clip(
             provider=provider,
             prompt=prompt_to_render,
@@ -264,19 +290,9 @@ def _generate_video_impl(
             enhance_prompt=provider_enhance_prompt if attempt == 0 else False,
             render_mode=render_mode,
             reference_image_path=str(reference_path) if reference_path else None,
-            reference_strength=(
-                1.0
-                if request.realism_profile == "identity_max" and character_identity_elements
-                else max(
-                    request.continuity_strength,
-                    0.95 if character_identity_elements and request.continuity_mode == "strict" else request.continuity_strength,
-                )
-            ),
+            reference_strength=max(0.6, first_frame_strength - 0.15 * motion_failures) if motion_failures else first_frame_strength,
             element_reference_sheet_path=str(element_sheet_path) if element_sheet_path else None,
-            element_reference_strength=(
-                max((item.strength for item in active_elements), default=settings.element_ingredients_strength)
-                if use_ingredients else settings.element_ingredients_strength
-            ),
+            element_reference_strength=max(0.55, sheet_strength - 0.2 * motion_failures) if motion_failures else sheet_strength,
             realism_profile=request.realism_profile,
             progress=chunk_progress,
         )
@@ -284,6 +300,24 @@ def _generate_video_impl(
         total_render_seconds += float(result.render_seconds)
         total_wall_seconds += float(result.wall_seconds or result.render_seconds)
         total_chunks += int(result.chunk_count or 1)
+
+        if reference_path is not None or element_sheet_path is not None:
+            motion = measure_motion(candidate_path)
+            if motion is not None and motion.still:
+                last_qc_note = "Frozen still: " + motion.note
+                if attempt < request.continuity_max_retries:
+                    continuity_regenerations += 1
+                    motion_failures += 1
+                    candidate_path.unlink(missing_ok=True)
+                    continue
+                final_qc_passed = False
+                qc_attempted = True
+                continuity_warnings.append(
+                    f"{motion.note}. Video retained for review; add what the subject does and says, "
+                    "or lower the Element reference strength."
+                )
+                source_path = candidate_path
+                break
 
         qc = None
         if request.continuity_mode != "off" and request.continuity_qc_mode != "off":
@@ -569,6 +603,9 @@ def create_video_job(
     response: Response,
 ):
     workspace_id = ensure_workspace(request, response)
+    tools_problem = media_tools_error()
+    if tools_problem:
+        raise HTTPException(status_code=503, detail=tools_problem)
     charge_seconds = max(1, int(round(payload.duration_seconds)))
     charge_reference = f"scene:{uuid.uuid4().hex}"
     try:

@@ -15,6 +15,7 @@ from ltx_worker import (
     run_ltx_command,
     static_reference_frame_count,
     temporal_chunk_count,
+    upscale_draft_video,
 )
 from models import DETAILING_LORA, INGREDIENTS_LORA, MODEL_ROOT, REFINE_DETAILS_LORA, REQUIRED_MODEL_FILES
 from retake_worker import retake_audio_only
@@ -321,6 +322,68 @@ def retake_audio(
         "reference_conditioned": True,
         "chunk_count": 1,
         "render_mode": "audio-retake",
+    }
+
+
+@app.function(
+    image=image,
+    gpu=GPU_TYPE,
+    secrets=[hf_secret],
+    volumes={"/models": models_volume},
+    timeout=60 * 60,
+    scaledown_window=SCALEDOWN_WINDOW,
+)
+def upscale_video(
+    video_bytes: bytes,
+    width: int,
+    height: int,
+    duration_seconds: float,
+    seed: int = 42,
+) -> dict:
+    """Make a sharper, larger version of an approved Draft without regenerating it."""
+    missing = _missing_base_models()
+    if not REFINE_DETAILS_LORA.exists():
+        missing.append(str(REFINE_DETAILS_LORA.relative_to(MODEL_ROOT)))
+    if missing:
+        raise RuntimeError(
+            "LTX-2.5 model files are missing. Run `modal run modal/app.py::download_models`. "
+            f"Missing: {missing[:3]}"
+        )
+    if not video_bytes:
+        raise ValueError("upscale_video requires the Draft video bytes.")
+
+    started = time.perf_counter()
+    source_path = Path("/tmp") / f"upscale-source-{uuid.uuid4().hex}.mp4"
+    output_path = Path("/tmp") / f"upscale-output-{uuid.uuid4().hex}.mp4"
+    source_path.write_bytes(video_bytes)
+    try:
+        upscale_draft_video(
+            source_path=source_path,
+            output_path=output_path,
+            width=int(width),
+            height=int(height),
+            duration_seconds=float(duration_seconds),
+            seed=int(seed),
+        )
+        if not output_path.exists():
+            raise RuntimeError("The upscale finished without producing an MP4 file.")
+        result_bytes = output_path.read_bytes()
+    finally:
+        source_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
+
+    return {
+        "video_bytes": result_bytes,
+        "seed": seed,
+        "render_details": (
+            f"{width}x{height} · {duration_seconds:.2f}s · Draft upscaled with Refine Details IC-LoRA · "
+            f"same video, source audio preserved · {GPU_TYPE}"
+        ),
+        "render_seconds": time.perf_counter() - started,
+        "gpu": GPU_TYPE,
+        "chunk_count": 1,
+        "render_mode": "upscale",
+        "detail_refined": True,
     }
 
 

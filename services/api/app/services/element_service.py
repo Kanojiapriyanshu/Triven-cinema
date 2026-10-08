@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Iterable
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from app.core.config import settings
 from app.schemas.elements import ElementBinding, ResolvedElementBinding
@@ -194,7 +194,7 @@ def _asset_row_to_dict(row: sqlite3.Row) -> dict:
 def _get_assets(conn: sqlite3.Connection, workspace_id: str, element_id: str) -> list[sqlite3.Row]:
     return list(
         conn.execute(
-            "SELECT * FROM element_assets WHERE workspace_id=? AND element_id=? ORDER BY created_at, id",
+            "SELECT * FROM element_assets WHERE workspace_id=? AND element_id=? ORDER BY created_at, rowid",
             (workspace_id, element_id),
         ).fetchall()
     )
@@ -549,6 +549,7 @@ def resolve_element_bindings(workspace_id: str, bindings: list[ElementBinding]) 
                 wardrobe_policy=binding.wardrobe_policy,
                 strength=binding.strength,
                 apply_to_all_scenes=binding.apply_to_all_scenes,
+                cast_role=binding.cast_role,
                 primary_asset_path=reference_paths[0],
                 primary_asset_url=reference_urls[0],
                 reference_asset_paths=reference_paths,
@@ -561,7 +562,15 @@ def resolve_element_bindings(workspace_id: str, bindings: list[ElementBinding]) 
 
 def elements_for_scene(scene_prompt: str, bindings: list[ResolvedElementBinding]) -> list[ResolvedElementBinding]:
     mentions = {match.group(1).lower() for match in MENTION_RE.finditer(scene_prompt or "")}
-    selected = [binding for binding in bindings if binding.apply_to_all_scenes or binding.handle.lower() in mentions]
+    # A scene that opens on an exact image (for example a product shot) is defined by that image. Elements
+    # that are merely carried across all scenes must not leak into it; only what the scene names stays.
+    opens_on_image = any(
+        binding.reference_mode == "start_frame" and binding.handle.lower() in mentions for binding in bindings
+    )
+    selected = [
+        binding for binding in bindings
+        if binding.handle.lower() in mentions or (binding.apply_to_all_scenes and not opens_on_image)
+    ]
     start_frames = [binding for binding in selected if binding.reference_mode == "start_frame"]
     if len(start_frames) > 1:
         handles = ", ".join(f"@{item.handle}" for item in start_frames)
@@ -573,6 +582,81 @@ def elements_for_scene(scene_prompt: str, bindings: list[ResolvedElementBinding]
     # split moved the @mention into a neighboring segment, preserve character/style
     # identity across the film when marked global; otherwise do not inject unused assets.
     return selected
+
+
+_TAG_RUN_RE = re.compile(
+    r"(?<![A-Za-z0-9_@])((?:@[A-Za-z][A-Za-z0-9_-]{0,31}[ \t,;]+)*@[A-Za-z][A-Za-z0-9_-]{0,31})\s*$"
+)
+_SENTENCE_END = ".!?…\"”’)]"
+
+
+def split_trailing_tags(prompt: str) -> tuple[str, list[str]]:
+    """Split a prompt into (story text, handles tagged in a trailing run).
+
+    A trailing run such as ``... room tone. @ijustine @radha`` is a list of reference tags, not
+    part of the story: it starts a new sentence/line and contains nothing but @handles. A single
+    mention that ends a sentence (``she walks to @Mira``) is narrative and is left in the story.
+    """
+    text = (prompt or "").rstrip()
+    match = _TAG_RUN_RE.search(text)
+    if not match:
+        return text, []
+    before = text[: match.start()]
+    stripped = before.rstrip()
+    starts_clean = (
+        not stripped
+        or stripped[-1] in _SENTENCE_END
+        or "\n" in before[len(stripped):]
+    )
+    if not starts_clean:
+        return text, []
+    handles = [item.lstrip("@") for item in re.findall(r"@[A-Za-z][A-Za-z0-9_-]{0,31}", match.group(1))]
+    return before, handles
+
+
+def park_tag_only_characters(
+    prompt: str, bindings: list[ResolvedElementBinding]
+) -> tuple[list[ResolvedElementBinding], list[ResolvedElementBinding]]:
+    """Keep a character that is only a trailing tag out of the identity reference.
+
+    Ingredients conditioning blends every Character panel it is given. When the shot text describes
+    one person and extra Characters are merely tagged after the last sentence, those extra faces
+    leak into the subject and identity drifts. Returns ``(kept, parked)``; nothing is parked unless
+    another Character is mentioned inside the story text, and ``cast_role="cast"`` always stays.
+    """
+    story, tags = split_trailing_tags(prompt)
+    if not tags:
+        return list(bindings), []
+    story_mentions = {match.group(1).lower() for match in MENTION_RE.finditer(story)}
+    tag_set = {handle.lower() for handle in tags}
+    narrative_character = any(
+        item.type == "character" and item.handle.lower() in story_mentions for item in bindings
+    )
+    if not narrative_character:
+        return list(bindings), []
+    kept: list[ResolvedElementBinding] = []
+    parked: list[ResolvedElementBinding] = []
+    for item in bindings:
+        handle = item.handle.lower()
+        if (
+            item.type == "character"
+            and item.cast_role != "cast"
+            and handle in tag_set
+            and handle not in story_mentions
+        ):
+            parked.append(item)
+        else:
+            kept.append(item)
+    return kept, parked
+
+
+def parked_character_warning(parked: list[ResolvedElementBinding]) -> str:
+    names = ", ".join(f"@{item.handle}" for item in parked)
+    return (
+        f"{names} {'is' if len(parked) == 1 else 'are'} only tagged after the last sentence and never described in the shot, "
+        "so the identity reference was limited to the Character(s) the scene is about to avoid blending faces. "
+        "Describe the Character in the scene text, or choose Keep in shot, to include them."
+    )
 
 
 WARDROBE_DESCRIPTION_TERMS = (
@@ -610,28 +694,28 @@ def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBind
     blocks: list[str] = []
 
     if identity_bindings or len(bindings) > 1:
-        panel_lines: list[str] = []
-        for index, binding in enumerate(bindings, start=1):
+        # Wording matters: describing a "reference sheet" with "Panel N: CHARACTER ..." made LTX draw
+        # exactly that, a fake document page with garbled titles, for the first ~3 seconds of the clip
+        # (observed in a real render). Identity text must read as plain subject description.
+        subject_lines: list[str] = []
+        for binding in bindings:
             if binding.type == "character" and binding.wardrobe_policy == "prompt":
                 description = _identity_only_description(binding.description)
                 wardrobe_note = (
-                    " Identity reference only: preserve face, hairline, age, skin and stable body proportions. "
-                    "Ignore clothing visible in the reference; the Generated video wardrobe is authoritative."
+                    " Keep this person's face, hairline, age, skin and body proportions. "
+                    "The clothing is whatever the Generated video text describes."
                 )
             else:
                 description = " ".join(binding.description.split())[:420]
                 wardrobe_note = (
-                    " Preserve the reference wardrobe exactly unless the scene explicitly changes it."
+                    " Keep this person's wardrobe exactly as supplied unless the scene changes it."
                     if binding.type == "character" else ""
                 )
-            panel_lines.append(
-                f"Panel {index}: {binding.type.upper()} {binding.name}. {description}{wardrobe_note}".rstrip()
-            )
-        blocks.append("Reference sheet: " + " ".join(panel_lines))
+            subject_lines.append(f"{binding.name} ({binding.type}). {description}{wardrobe_note}".rstrip())
+        blocks.append("Subjects: " + " ".join(subject_lines))
         blocks.append(
-            "REFERENCE BEHAVIOR: The reference sheet defines appearance only, not timing. "
-            "Begin visible natural motion immediately on the first generated frames; do not hold, freeze, "
-            "or replay the reference sheet as an opening shot unless the user explicitly asks for a still hold."
+            "The video opens directly inside the live scene, with the subject already in natural motion "
+            "from the very first frame."
         )
         prompt_wardrobe = [
             binding.name for binding in identity_bindings
@@ -640,9 +724,9 @@ def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBind
         if prompt_wardrobe:
             blocks.append(
                 "IDENTITY / WARDROBE SEPARATION: For " + ", ".join(prompt_wardrobe) +
-                ", use the reference for facial identity, hairline, age and stable human proportions only. "
+                ", take only facial identity, hairline, age and stable human proportions from the supplied identity. "
                 "The Generated video wardrobe description is authoritative. Do not copy, blend, layer, recolor, "
-                "or hybridize clothing from the reference image when the scene specifies different clothing. "
+                "or hybridize clothing from the supplied identity when the scene specifies different clothing. "
                 "Keep one coherent garment construction with the exact requested colors, pattern and material."
             )
 
@@ -657,6 +741,106 @@ def compile_element_prompt(scene_prompt: str, bindings: list[ResolvedElementBind
     return "\n\n".join(blocks)
 
 
+def _runs(active: list[bool], min_gap: int) -> list[tuple[int, int]]:
+    """Contiguous runs of True values; runs separated by fewer than `min_gap` False values are merged."""
+    runs: list[list[int]] = []
+    for index, value in enumerate(active):
+        if not value:
+            continue
+        if runs and index - runs[-1][1] <= min_gap:
+            runs[-1][1] = index
+        else:
+            runs.append([index, index])
+    return [(start, end) for start, end in runs]
+
+
+def primary_subject_box(image: Image.Image) -> tuple[int, int, int, int] | None:
+    """Bounding box of the main portrait when an upload is really a collage or turnaround sheet.
+
+    A character sheet (one big close-up plus several full-body views on a plain background) fed to LTX as
+    the identity reference is simply replayed as the video. When the picture splits into three or more
+    separate subjects along the width, return the box of the biggest one; return None for a normal photo.
+    """
+    width, height = image.size
+    if width < 256 or height < 128:
+        return None
+    scale = 320 / max(width, height)
+    small = ImageOps.exif_transpose(image).convert("L").resize(
+        (max(32, int(width * scale)), max(32, int(height * scale))), Image.Resampling.BILINEAR
+    )
+    sw, sh = small.size
+    pixels = small.load()
+    border = [pixels[x, y] for x in range(sw) for y in (0, 1, sh - 2, sh - 1)] + [
+        pixels[x, y] for y in range(sh) for x in (0, 1, sw - 2, sw - 1)
+    ]
+    background = sorted(border)[len(border) // 2]
+    # Textured or busy backgrounds are not "plain": a normal photo.
+    # A collage may touch the left/right/top edge, so only a mostly non-plain border means a busy photo.
+    if sum(1 for value in border if abs(value - background) > 24) / len(border) > 0.45:
+        return None
+
+    columns = [
+        sum(1 for y in range(sh) if abs(pixels[x, y] - background) > 28) / sh for x in range(sw)
+    ]
+    active = [value > 0.03 for value in columns]
+    runs = [run for run in _runs(active, 1) if run[1] - run[0] >= max(4, int(sw * 0.03))]
+    if len(runs) < 3:
+        return None
+
+    mass = [sum(columns[start : end + 1]) for start, end in runs]
+    start, end = runs[mass.index(max(mass))]
+    pad = max(2, int(sw * 0.01))
+    left, right = max(0, start - pad), min(sw - 1, end + pad)
+    rows = [
+        sum(1 for x in range(left, right + 1) if abs(pixels[x, y] - background) > 28) / (right - left + 1)
+        for y in range(sh)
+    ]
+    ys = [y for y, value in enumerate(rows) if value > 0.03]
+    top, bottom = (min(ys), max(ys)) if ys else (0, sh - 1)
+    inverse = 1 / scale
+    return (
+        int(left * inverse),
+        int(max(0, top - pad) * inverse),
+        min(width, int((right + 1) * inverse)),
+        min(height, int((bottom + 1 + pad) * inverse)),
+    )
+
+
+def _open_reference(image_path: str) -> Image.Image:
+    """Open a reference photo, cropped to its main subject when the upload is a collage/turnaround sheet."""
+    source = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
+    box = primary_subject_box(source)
+    return source.crop(box) if box else source
+
+
+def replace_handles(text: str, bindings: list[ResolvedElementBinding]) -> str:
+    for binding in bindings:
+        text = re.sub(
+            rf"(?<![A-Za-z0-9_])@{re.escape(binding.handle)}\b", binding.name, text, flags=re.IGNORECASE
+        )
+    return text
+
+
+def compile_hero_prompt(scene_prompt: str, bindings: list[ResolvedElementBinding], *, opening: bool) -> str:
+    """Prompt for a render that starts from an approved start frame.
+
+    The frame already shows the cast and products, so no reference sheet is built (a sheet next to a start
+    frame was replayed as a split screen). Handles become plain names and, on the opening scene, the model is
+    told the supplied image is frame 0 and must be animated, not redesigned.
+    """
+    action = replace_handles(scene_prompt, bindings).strip()
+    if not opening or not bindings:
+        return action
+    names = ", ".join(binding.name for binding in bindings)
+    return (
+        f"OPENING FRAME: The supplied image is frame 0 and already shows {names} exactly as they must look, including "
+        "face, hair, clothing and any product in hand. Start from it and animate forward with natural micro-motion. "
+        "Keep every detail identical; do not recreate, redesign, replace or duplicate anyone or anything. "
+        "Facial expressions stay natural and restrained, with small believable movements.\n\n"
+        f"Generated video: {action}"
+    )
+
+
 def _paste_face_priority_crop(canvas: Image.Image, image_path: str, box: tuple[int, int, int, int]) -> None:
     """Place an upper-face/shoulder crop when a character reference also contains clothing.
 
@@ -667,41 +851,37 @@ def _paste_face_priority_crop(canvas: Image.Image, image_path: str, box: tuple[i
     left, top, right, bottom = box
     if right <= left or bottom <= top:
         return
-    with Image.open(image_path) as source:
-        source = ImageOps.exif_transpose(source).convert("RGB")
+    box_w, box_h = right - left, bottom - top
+    with _open_reference(image_path) as source:
         sw, sh = source.size
-        if sh >= sw * 1.15:
-            crop_h = max(128, int(sh * 0.46))
-            crop_w = min(sw, max(128, int(crop_h * 1.05)))
-            x0 = max(0, (sw - crop_w) // 2)
-            y0 = max(0, int(sh * 0.02))
-            source = source.crop((x0, y0, min(sw, x0 + crop_w), min(sh, y0 + crop_h)))
-        elif sh >= sw * 0.8:
-            crop_h = max(128, int(sh * 0.68))
-            y0 = max(0, int(sh * 0.02))
-            source = source.crop((0, y0, sw, min(sh, y0 + crop_h)))
-        fitted = ImageOps.contain(
-            source,
-            (right - left, bottom - top),
-            method=Image.Resampling.LANCZOS,
-        )
-        x = left + ((right - left) - fitted.width) // 2
-        y = top + ((bottom - top) - fitted.height) // 2
-        canvas.paste(fitted, (x, y))
+        if sh >= sw * 0.8:
+            # Head-and-shoulders window with the SAME aspect as the box, anchored at the top of the photo.
+            # The window fills the whole box: black or padded bars around the portrait were reproduced by
+            # LTX as dark hatched pillars with garbled text for the entire clip.
+            crop_w = sw
+            crop_h = min(sh, max(128, int(round(crop_w * box_h / box_w))))
+            y0 = min(max(0, int(sh * 0.02)), sh - crop_h)
+            source = source.crop((0, y0, sw, y0 + crop_h))
+        fitted = ImageOps.fit(source, (box_w, box_h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.0))
+        canvas.paste(fitted, (left, top))
+
+
+def _blurred_cover(source: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Soft out-of-focus fill for the area a contained image leaves empty (never a hard black bar)."""
+    covered = ImageOps.fit(source, size, method=Image.Resampling.BILINEAR)
+    return covered.filter(ImageFilter.GaussianBlur(radius=max(8, max(size) // 24)))
+
 
 def _paste_contained(canvas: Image.Image, image_path: str, box: tuple[int, int, int, int]) -> None:
     left, top, right, bottom = box
     if right <= left or bottom <= top:
         return
-    with Image.open(image_path) as source:
-        source = ImageOps.exif_transpose(source).convert("RGB")
-        fitted = ImageOps.contain(
-            source,
-            (right - left, bottom - top),
-            method=Image.Resampling.LANCZOS,
-        )
-        x = left + ((right - left) - fitted.width) // 2
-        y = top + ((bottom - top) - fitted.height) // 2
+    with _open_reference(image_path) as source:
+        size = (right - left, bottom - top)
+        canvas.paste(_blurred_cover(source, size), (left, top))
+        fitted = ImageOps.contain(source, size, method=Image.Resampling.LANCZOS)
+        x = left + (size[0] - fitted.width) // 2
+        y = top + (size[1] - fitted.height) // 2
         canvas.paste(fitted, (x, y))
 
 
@@ -778,7 +958,7 @@ def build_reference_sheet(bindings: list[ResolvedElementBinding], output_path: P
         if count == 1 and binding.type == "character" and binding.wardrobe_policy == "prompt":
             assets = _reference_assets_for_panel(binding)
             if assets:
-                _paste_face_priority_crop(canvas, assets[0][0], (4, 4, width - 4, height - 4))
+                _paste_face_priority_crop(canvas, assets[0][0], (0, 0, width, height))
             break
         col = index % columns
         row = index // columns

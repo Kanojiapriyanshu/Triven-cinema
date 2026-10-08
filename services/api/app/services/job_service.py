@@ -237,6 +237,9 @@ def workspace_owns_generated_file(workspace_id: str, filename: str) -> bool:
     clean_filename = Path(filename).name
     if not clean_workspace or not clean_filename or clean_filename != filename:
         return False
+    # Start frames are generated on request, before any job exists; their name carries the workspace.
+    if clean_filename.startswith(f"hero-{clean_workspace}-"):
+        return True
 
     initialize_job_store()
     with _DB_LOCK, closing(_connect()) as connection:

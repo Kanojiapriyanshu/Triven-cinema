@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     gemini_timeout_seconds: float = 20.0
     gemini_thinking_level: str = "low"
     gemini_fallback_models: str = "gemini-3.7-flash,gemini-3.6-flash"
+    # Image model used for start frames. Empty = pick the best image-capable model the key can use.
+    gemini_image_model: str = ""
+    hero_frame_timeout_seconds: float = 120.0
     gemini_max_attempts_per_model: int = 3
     gemini_retry_backoff_seconds: float = 0.8
 
@@ -96,6 +99,12 @@ class Settings(BaseSettings):
     # visible as qc_passed=False and prevents automatic YouTube publishing.
     # Set false to retain the legacy strict behavior (delete/reject on QC failure).
     factory_preserve_on_qc_failure: bool = True
+
+    # Frozen-still guard. A render whose sampled frames barely change (a held reference image
+    # with audio on top) is treated as a failed attempt and retried with a looser reference.
+    # Average grey-level change between sampled frames below this value counts as "frozen".
+    factory_motion_guard_enabled: bool = True
+    motion_guard_min_mean_diff: float = 0.8
 
     # Continuity/cardinality guard. "auto" requests use this visual QC gate when
     # Gemini is configured; QC failures can trigger a bounded regeneration before

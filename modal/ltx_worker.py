@@ -372,6 +372,70 @@ def preserve_source_audio(
     if process.returncode != 0 or not output_path.exists():
         raise RuntimeError("Unable to preserve source audio after detail refinement: " + process.stderr[-2000:])
 
+def build_prescale_command(
+    *,
+    input_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: int = 24,
+) -> list[str]:
+    """Lanczos-scale an approved Draft to the target canvas, picture only, nearly lossless.
+
+    The Refine Details adapter is video-to-video. Feeding it the Draft at the final size keeps the composition,
+    motion and performance of the Draft; only texture and fine detail are re-synthesised.
+    """
+    return [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", str(input_path),
+        "-vf", f"scale={int(width)}:{int(height)}:flags=lanczos,fps={int(fps)},format=yuv420p",
+        "-an",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "10",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+
+
+def upscale_draft_video(
+    *,
+    source_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    duration_seconds: float,
+    seed: int,
+) -> None:
+    """Turn an approved Draft into a sharper, larger version of the SAME video, keeping its own audio."""
+    prescaled = output_path.with_name(output_path.stem + "-prescaled.mp4")
+    refined = output_path.with_name(output_path.stem + "-refined.mp4")
+    try:
+        process = subprocess.run(
+            build_prescale_command(input_path=source_path, output_path=prescaled, width=width, height=height),
+            capture_output=True,
+            text=True,
+        )
+        if process.returncode != 0 or not prescaled.exists():
+            raise RuntimeError("Unable to prepare the Draft for upscaling: " + process.stderr[-2000:])
+        run_ltx_command(
+            build_refine_details_command(
+                input_video_path=prescaled,
+                output_path=refined,
+                width=width,
+                height=height,
+                duration_seconds=duration_seconds,
+                seed=seed,
+            )
+        )
+        preserve_source_audio(
+            refined_video_path=refined,
+            source_video_path=source_path,
+            output_path=output_path,
+        )
+    finally:
+        prescaled.unlink(missing_ok=True)
+        refined.unlink(missing_ok=True)
+
+
 def run_ltx_command(command: list[str]) -> None:
     process = subprocess.run(
         command,

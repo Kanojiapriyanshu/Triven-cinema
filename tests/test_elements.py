@@ -90,7 +90,7 @@ class ElementServiceTests(unittest.TestCase):
         scene = elements_for_scene("@Radha reaches for @Flute.", bindings)
         self.assertEqual({item.handle for item in scene}, {"Radha", "Flute"})
         compiled = compile_element_prompt("@Radha reaches for @Flute.", scene)
-        self.assertIn("Reference sheet:", compiled)
+        self.assertIn("Subjects:", compiled)
         self.assertIn("Generated video:", compiled)
         self.assertNotIn("@Radha", compiled)
 
@@ -116,7 +116,7 @@ class ElementServiceTests(unittest.TestCase):
             ],
         )
         compiled = compile_element_prompt("@Radha slowly turns toward camera.", bindings)
-        self.assertNotIn("Reference sheet:", compiled)
+        self.assertNotIn("Subjects:", compiled)
         self.assertIn("START FRAME BEHAVIOR", compiled)
         self.assertIn("Animate forward", compiled)
         self.assertIn("Generated video:", compiled)
@@ -205,6 +205,9 @@ class ElementServiceTests(unittest.TestCase):
         )
         self.assertIn("Generated video: Presenter wears a white and soft-lavender cable-knit sweater.", compiled)
         self.assertIn("generated video wardrobe", compiled.lower())
+        # Regression: these words made LTX render a fake "character sheet" page as the opening seconds.
+        for word in ("reference sheet", "panel", "character radha", "character presenter"):
+            self.assertNotIn(word, compiled.lower())
         self.assertNotIn("black leather jacket", compiled.lower())
         self.assertNotIn("blue jeans", compiled.lower())
         with tempfile.TemporaryDirectory() as tmp:
@@ -242,6 +245,40 @@ class ElementServiceTests(unittest.TestCase):
             tampered = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query, doseq=True), parts.fragment))
             denied = client.get(tampered)
             self.assertEqual(denied.status_code, 404)
+
+    def test_solo_reference_fills_the_whole_frame_with_no_black_bars(self):
+        # Regression: a portrait pasted on a black 16:9 canvas came back in the video as dark hatched
+        # pillars with garbled text over ~40% of the frame for the whole clip.
+        presenter = create_element(
+            self.workspace,
+            name="Presenter", handle="Presenter", element_type="character", description="",
+            uploads=[UploadedElementAsset("p.png", "image/png", image_bytes((200, 120, 90), (400, 600)), role="face")],
+        )
+        bindings = resolve_element_bindings(
+            self.workspace,
+            [ElementBinding(element_id=presenter["id"], version_id=presenter["current_version_id"], handle="Presenter")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = build_reference_sheet(bindings, Path(tmp) / "sheet.png")
+            with Image.open(path).convert("RGB") as image:
+                w, h = image.size
+                for x, y in ((0, 0), (0, h // 2), (w - 1, h // 2), (w - 1, h - 1), (w // 2, 0), (w // 2, h - 1)):
+                    self.assertEqual(image.getpixel((x, y)), (200, 120, 90), f"black bar at {(x, y)}")
+
+    def test_non_character_references_are_framed_by_blur_not_black(self):
+        prop = create_element(
+            self.workspace,
+            name="Mug", handle="Mug", element_type="prop", description="",
+            uploads=[UploadedElementAsset("m.png", "image/png", image_bytes((30, 160, 80), (200, 600)))],
+        )
+        bindings = resolve_element_bindings(
+            self.workspace,
+            [ElementBinding(element_id=prop["id"], version_id=prop["current_version_id"], handle="Mug")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = build_reference_sheet(bindings, Path(tmp) / "sheet.png")
+            with Image.open(path).convert("RGB") as image:
+                self.assertNotEqual(image.getpixel((6, image.height // 2)), (0, 0, 0))
 
     def test_reference_sheet_is_clean_composite(self):
         a = create_element(

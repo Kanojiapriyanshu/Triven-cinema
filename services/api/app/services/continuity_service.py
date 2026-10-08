@@ -344,6 +344,32 @@ def compose_render_integrity_prompt(
         blocks.append("RENDER QC RETRY: Correct this previously observed issue: " + compact_text(qc_feedback, 300))
     return "\n\n".join(block for block in blocks if block)
 
+CONTINUATION_ANCHOR_NOTE = (
+    "CONTINUATION ANCHOR: the supplied image is the exact last frame of the previous shot and frame 0 of this one. "
+    "Every person, garment, prop, set element and light in it already exists: continue them as the one canonical "
+    "instance, begin natural motion immediately, and do not recreate, replace, re-introduce or duplicate anything."
+)
+
+
+def append_continuation_anchor(prompt: str) -> str:
+    if CONTINUATION_ANCHOR_NOTE in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{CONTINUATION_ANCHOR_NOTE}"
+
+
+MOTION_RETRY_NOTE = (
+    "MOTION RETRY: the previous attempt came out as a frozen still image. The subject must visibly move from the "
+    "first second: breathing, blinking, head and shoulder movement, lips and expression changing as they speak, "
+    "and a slow camera drift. The reference only defines appearance; never hold or replay it as a still."
+)
+
+
+def append_motion_retry_note(prompt: str) -> str:
+    if MOTION_RETRY_NOTE in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{MOTION_RETRY_NOTE}"
+
+
 def safe_continuity_id(value: str | None) -> str:
     raw = compact_text(value, 96) if value else ""
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")

@@ -25,6 +25,7 @@ class VideoProvider(ABC):
     name: str
     supports_native_long_video: bool = False
     supports_audio_retake: bool = False
+    supports_upscale: bool = False
 
     @abstractmethod
     def generate(
@@ -54,3 +55,14 @@ class VideoProvider(ABC):
         seed: int,
     ) -> VideoGenerationResult:
         raise NotImplementedError(f"{self.name} does not support LTX audio Retake.")
+
+    def upscale(
+        self,
+        *,
+        video_path: str,
+        width: int,
+        height: int,
+        duration_seconds: float,
+        seed: int,
+    ) -> VideoGenerationResult:
+        raise NotImplementedError(f"{self.name} cannot upscale an approved Draft.")

@@ -67,6 +67,51 @@ def _compact(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+_TERMINATORS = ".!?…"
+_DOUBLE_QUOTES = '"“”'
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on sentence ends without ever cutting inside a spoken line.
+
+    The old regex split `says: "Okay… this is it. The iPhone 18."` into three pieces, so the planner could
+    keep the first half of a line of dialogue and silently drop the rest of the script.
+    """
+    text = _compact(text)
+    if not text:
+        return []
+    straight_balanced = text.count('"') % 2 == 0
+    sentences: list[str] = []
+    buffer: list[str] = []
+    in_quote = False
+    last = len(text) - 1
+    for index, char in enumerate(text):
+        buffer.append(char)
+        closed_quote = False
+        if char == '"' and straight_balanced:
+            in_quote = not in_quote
+            closed_quote = not in_quote
+        elif char == "“":
+            in_quote = True
+        elif char == "”":
+            in_quote = False
+            closed_quote = True
+        followed_by_break = index == last or text[index + 1].isspace()
+        if not followed_by_break:
+            continue
+        ends_sentence = (
+            (char in _TERMINATORS and not in_quote)
+            or (closed_quote and len(buffer) >= 2 and buffer[-2] in _TERMINATORS)
+        )
+        if ends_sentence:
+            sentences.append("".join(buffer).strip())
+            buffer = []
+    tail = "".join(buffer).strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
 def _limit_words(value: str, limit: int) -> str:
     words = _compact(value).split()
     if len(words) <= limit:
@@ -141,11 +186,7 @@ def _story_units(prompt: str) -> list[tuple[str, str]]:
     if len(paragraphs) > 1:
         return [(f"Story beat {index + 1}", item) for index, item in enumerate(paragraphs)]
 
-    sentences = [
-        _compact(item)
-        for item in re.split(r"(?<=[.!?])\s+", _compact(story))
-        if _compact(item)
-    ]
+    sentences = _split_sentences(story)
     return [(f"Story beat {index + 1}", item) for index, item in enumerate(sentences)]
 
 
@@ -191,11 +232,7 @@ def _sentence_bounded_excerpt(value: str, word_budget: int) -> str:
     if len(compact.split()) <= word_budget:
         return compact
 
-    pieces = [
-        _compact(piece)
-        for piece in re.split(r"(?<=[.!?…])\s+", compact)
-        if _compact(piece)
-    ]
+    pieces = _split_sentences(compact)
     selected: list[str] = []
     used = 0
     for piece in pieces:
@@ -211,39 +248,57 @@ def _sentence_bounded_excerpt(value: str, word_budget: int) -> str:
     return " ".join(selected) if selected else _limit_words(compact, word_budget)
 
 
-def _single_shot_user_prompt(prompt: str, max_words: int = 320) -> str:
-    """Compact a long talking-head prompt without dropping its hard visual constraints.
+_SPEECH_CUE = re.compile(r"\b(?:says?|said|speaks?|asks?|whispers?|replies|tells?)\b", re.IGNORECASE)
+_CRITICAL_TERMS = (
+    "wear", "wardrobe", "sweater", "shirt", "dress", "jacket", "coat", "top", "trouser", "jeans",
+    "skin", "face", "hair", "eyes", "camera", "shot", "lens", "desk", "table", "microphone", "monitor",
+    "background", "backdrop", "lighting", "light", "audio", "voice", "sound", "says", "say", "dialogue",
+)
 
-    For one-shot Creator renders, the old generic 190-word cap could silently lose
-    wardrobe, dialogue or lighting instructions. This deterministic selector keeps
-    user-authored high-value sentences only; it does not invent or rewrite content.
+
+def _sentence_priority(index: int, last: int, sentence: str) -> int:
+    lower = sentence.lower()
+    if any(mark in sentence for mark in _DOUBLE_QUOTES) or _SPEECH_CUE.search(sentence):
+        return 100  # what is said and what happens next: never dropped
+    if index < 3 or index == last:
+        return 90
+    if "@" in sentence:
+        return 60  # the subject doing something
+    if any(term in lower for term in _CRITICAL_TERMS):
+        return 40
+    return 10
+
+
+def _single_shot_user_prompt(prompt: str, max_words: int = 320) -> str:
+    """Compact a long single-shot prompt without losing what is said or done.
+
+    Long creator prompts open with several paragraphs of look/lighting and END with the performance
+    and dialogue. Truncating from the end (the old behaviour) removed exactly the part that makes the
+    video. Sentences are ranked instead: dialogue and actions are kept in full, then the opening, then
+    subject sentences, then wardrobe/camera/audio details, and lowest-value filler is dropped first.
+    The wording is never changed.
     """
     compact = _compact(prompt)
     if len(compact.split()) <= max_words:
         return compact
-    sentences = [
-        _compact(piece)
-        for piece in re.split(r"(?<=[.!?])\s+", compact)
-        if _compact(piece)
-    ]
-    critical_terms = (
-        "wear", "wardrobe", "sweater", "shirt", "dress", "jacket", "coat", "top", "trouser", "jeans",
-        "skin", "face", "hair", "eyes", "camera", "shot", "lens", "desk", "table", "microphone", "monitor",
-        "background", "backdrop", "lighting", "light", "audio", "voice", "sound", "says", "say", "dialogue",
-    )
-    selected: set[int] = set()
-    for index, sentence in enumerate(sentences):
-        lower = sentence.lower()
-        if index < 3 or '"' in sentence or any(term in lower for term in critical_terms):
-            selected.add(index)
-    if sentences:
-        selected.add(len(sentences) - 1)
+    sentences = _split_sentences(compact)
+    if not sentences:
+        return _limit_words(compact, max_words)
 
-    ordered = [sentences[index] for index in range(len(sentences)) if index in selected]
-    result = " ".join(ordered)
-    if len(result.split()) <= max_words:
-        return result
-    return _sentence_bounded_excerpt(result, max_words)
+    last = len(sentences) - 1
+    ranked = sorted(
+        range(len(sentences)),
+        key=lambda i: (-_sentence_priority(i, last, sentences[i]), i),
+    )
+    chosen: set[int] = set()
+    used = 0
+    for i in ranked:
+        words = len(sentences[i].split())
+        must_keep = _sentence_priority(i, last, sentences[i]) >= 90
+        if must_keep or used + words <= max_words:
+            chosen.add(i)
+            used += words
+    return " ".join(sentences[i] for i in sorted(chosen))
 
 
 def _direct_story_segments(
@@ -259,6 +314,15 @@ def _direct_story_segments(
     LTX shots, and keep source wording rather than feeding the same full manuscript
     to every shot.
     """
+    # When the creator wrote exactly one paragraph per scene, that structure is the plan: do not re-split it
+    # by sentence count (that moved a character's last spoken line into the next, different shot).
+    paragraphs = [_compact(item) for item in re.split(r"\n\s*\n+", prompt.strip()) if _compact(item)]
+    if scene_count > 1 and len(paragraphs) == scene_count and not re.search(r"(?m)^#{1,2}\s", prompt):
+        return [
+            (f"Scene {index + 1}", _single_shot_user_prompt(paragraph, max_words=words_per_scene + 90))
+            for index, paragraph in enumerate(paragraphs)
+        ]
+
     units = _story_units(prompt)
     if not units:
         clean = _compact(prompt)
@@ -274,11 +338,7 @@ def _direct_story_segments(
             expanded.append((title, body))
             continue
 
-        sentences = [
-            _compact(piece)
-            for piece in re.split(r"(?<=[.!?…])\s+", body)
-            if _compact(piece)
-        ]
+        sentences = _split_sentences(body)
         chunk: list[str] = []
         chunk_words = 0
         part = 1
@@ -562,7 +622,7 @@ def create_prompt_only_plan(
     scenes: list[Scene] = []
     for index, (title, source_segment) in enumerate(direct_segments):
         transition = (
-            "Continue from the supplied previous frame into this next chronological story segment. "
+            "Continue the film with this next chronological story segment, starting from the supplied first frame. "
             "Do not replay an earlier beat, reset to the opening composition, or re-introduce characters already established."
             if index > 0
             else "Render only this opening chronological story segment as one continuous shot."
@@ -572,7 +632,7 @@ def create_prompt_only_plan(
             pieces.append(f"USER STYLE: {style_context}")
         pieces.append(f"USER STORY SEGMENT {index + 1}/{len(direct_segments)}: {source_segment}")
         pieces.append(f"SEQUENCING CONTROL: {transition}")
-        scene_prompt = _limit_words(" ".join(pieces), 340 if max(1, scene_count) == 1 else 220)
+        scene_prompt = _limit_words(" ".join(pieces), 420 if max(1, scene_count) == 1 else 300)
         scenes.append(
             Scene(
                 id=index + 1,

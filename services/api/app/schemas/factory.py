@@ -41,6 +41,14 @@ class FactoryGenerationRequest(BaseModel):
     # stores immutable element/version ids rather than relying on plain text names.
     element_bindings: list[ElementBinding] = Field(default_factory=list, max_length=20)
 
+    # "Continue scene": basename of a continuity frame returned by an earlier job in this
+    # workspace. It becomes frame 0 of the first scene, so the new shot continues the old one.
+    start_frame_filename: str | None = Field(default=None, max_length=160)
+
+    # An approved start frame (see /factory/hero-frame). It is the exact first frame of scene 1 and replaces the
+    # reference sheet: the cast and products are already in it.
+    hero_frame_filename: str | None = Field(default=None, max_length=160)
+
     publish_to_youtube: bool = False
     youtube_title: str | None = Field(default=None, max_length=100)
     youtube_description: str = Field(default="", max_length=5000)
@@ -51,6 +59,8 @@ class FactoryGenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_factory_request(self):
+        if self.hero_frame_filename and self.start_frame_filename:
+            raise ValueError("Choose either a start frame or a continuation, not both.")
         if self.scene_duration_seconds > self.target_duration_seconds:
             self.scene_duration_seconds = self.target_duration_seconds
         if self.publish_to_youtube and not (self.youtube_title or "").strip():
@@ -97,6 +107,21 @@ class FactoryGenerationResponse(BaseModel):
     audio_warnings: list[str] = Field(default_factory=list)
     elements_used: list[str] = Field(default_factory=list)
     element_reference_mode: str | None = None
+    continuity_frame_filename: str | None = None
+    continuity_frame_url: str | None = None
     youtube_video_id: str | None = None
     youtube_url: str | None = None
     youtube_privacy: Literal["private", "unlisted", "public"] | None = None
+
+
+class HeroFrameRequest(BaseModel):
+    prompt: str = Field(..., min_length=10, max_length=50000)
+    aspect_ratio: AspectRatio = "16:9"
+    element_bindings: list[ElementBinding] = Field(default_factory=list, max_length=20)
+
+
+class HeroFrameResponse(BaseModel):
+    filename: str
+    url: str
+    model: str
+    elements: list[str] = Field(default_factory=list)
