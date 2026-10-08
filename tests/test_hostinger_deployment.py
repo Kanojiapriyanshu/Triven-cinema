@@ -1,5 +1,6 @@
 import contextlib
 import io
+import itertools
 import json
 import os
 import shutil
@@ -70,6 +71,7 @@ class HostingerDeploymentTests(unittest.TestCase):
         self.assertIn('AUTO_LOGIN_EMAIL=""', env_text)
         self.assertIn("AUTH_ENABLED=true", env_text)
         self.assertIn("DEMO_AUTH_SHOW_OTP=false", env_text)
+        self.assertIn("ALLOW_PRODUCTION_DEMO_AUTH=false", env_text)
         self.assertIn("server_name cinema.devansh.info;", nginx_text)
 
 
@@ -94,12 +96,98 @@ class ProductionPreflightTests(unittest.TestCase):
 
     def validate(self, **changes):
         preflight.ERRORS.clear()
+        preflight.WARNINGS.clear()
         with contextlib.redirect_stdout(io.StringIO()):
             preflight.validate_production_settings({**self.env, **changes})
         return preflight.ERRORS
 
     def test_secure_production_configuration_passes(self):
         self.assertEqual([], self.validate())
+        self.assertEqual([], preflight.WARNINGS)
+
+    def test_demo_requires_explicit_production_opt_in(self):
+        errors = self.validate(DEMO_AUTH_SHOW_OTP="true", SMTP_HOST="", SMTP_FROM="")
+        self.assertTrue(any("ALLOW_PRODUCTION_DEMO_AUTH=true" in error for error in errors))
+        self.assertTrue(any("SMTP_HOST" in error for error in errors))
+        self.assertEqual([], preflight.WARNINGS)
+
+    def test_approved_demo_without_smtp_passes_with_one_specific_warning(self):
+        self.assertEqual([], self.validate(
+            DEMO_AUTH_SHOW_OTP="true", ALLOW_PRODUCTION_DEMO_AUTH="true",
+            SMTP_HOST="", SMTP_FROM="", SMTP_SECURITY="none",
+        ))
+        self.assertEqual(1, len(preflight.WARNINGS))
+        for consequence in ("browser-visible OTPs", "any email address", "workspace", "GPU credits"):
+            self.assertIn(consequence, preflight.WARNINGS[0])
+
+    def test_opt_in_alone_does_not_bypass_email_delivery(self):
+        errors = self.validate(ALLOW_PRODUCTION_DEMO_AUTH="true", SMTP_HOST="", SMTP_FROM="")
+        self.assertTrue(any("SMTP_HOST" in error for error in errors))
+        self.assertEqual([], preflight.WARNINGS)
+
+    def test_invalid_demo_booleans_are_rejected_even_with_no_demo_requested(self):
+        for key in ("DEMO_AUTH_SHOW_OTP", "ALLOW_PRODUCTION_DEMO_AUTH"):
+            for value in ("", "treu", "2"):
+                with self.subTest(key=key, value=value):
+                    self.assertTrue(any(key in error for error in self.validate(**{key: value})))
+
+    def test_demo_does_not_bypass_other_production_guards(self):
+        for key, value in {
+            "TRIVEN_SECRET_KEY": "short",
+            "AUTH_ENABLED": "false",
+            "AUTO_LOGIN_EMAIL": "shared@example.test",
+            "DEBUG": "true",
+            "ENABLE_SYNC_RENDER_ENDPOINTS": "true",
+            "JOB_WORKERS": "2",
+            "CORS_ORIGINS": "*",
+            "BILLING_ENFORCE_CREDITS": "true",
+        }.items():
+            with self.subTest(key=key):
+                errors = self.validate(
+                    DEMO_AUTH_SHOW_OTP="true", ALLOW_PRODUCTION_DEMO_AUTH="true",
+                    SMTP_HOST="", SMTP_FROM="", **{key: value},
+                )
+                self.assertTrue(any(key in error for error in errors), errors)
+
+    def test_preflight_and_runtime_agree_on_production_demo_delivery_matrix(self):
+        from app.core.config import Settings
+
+        smtp_settings = (
+            ("", ""),
+            ("smtp.example.test", ""),
+            ("", "noreply@example.test"),
+            ("smtp.example.test", "noreply@example.test"),
+        )
+        for demo, allow, smtp, security in itertools.product(
+            (None, "false", "true"), (None, "false", "true"), smtp_settings,
+            ("starttls", "ssl", "none"),
+        ):
+            with self.subTest(demo=demo, allow=allow, smtp=smtp, security=security):
+                env = {**self.env, "SMTP_HOST": smtp[0], "SMTP_FROM": smtp[1], "SMTP_SECURITY": security}
+                for key, value in (("DEMO_AUTH_SHOW_OTP", demo), ("ALLOW_PRODUCTION_DEMO_AUTH", allow)):
+                    if value is None:
+                        env.pop(key, None)
+                    else:
+                        env[key] = value
+                preflight.ERRORS.clear()
+                preflight.WARNINGS.clear()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    preflight.validate_production_settings(env)
+                # Clear host/.env configuration so omitted flags exercise the
+                # application's actual defaults as well as the preflight defaults.
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    runtime = Settings(_env_file=None, **{key.lower(): value for key, value in env.items()})
+                runtime_errors, _ = runtime.production_problems()
+                approved_demo = demo != "false" and allow == "true"
+                smtp_configured = bool(smtp[0] and smtp[1])
+                expected_success = (
+                    (demo == "false" or approved_demo)
+                    and (smtp_configured or approved_demo)
+                    and (not smtp_configured or security in {"starttls", "ssl"})
+                )
+                self.assertEqual(expected_success, not preflight.ERRORS, preflight.ERRORS)
+                self.assertEqual(expected_success, not runtime_errors, runtime_errors)
+                self.assertEqual(int(approved_demo), len(preflight.WARNINGS))
 
     def test_unsafe_runtime_defaults_must_be_explicitly_disabled(self):
         for key in ("DEMO_AUTH_SHOW_OTP", "ENABLE_SYNC_RENDER_ENDPOINTS"):

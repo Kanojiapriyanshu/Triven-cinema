@@ -32,14 +32,14 @@ Docker does not publish the application on public interfaces. Nginx/Certbot alre
 13. **Customer payment:** Stripe Checkout credit packs + signed webhook + idempotent credit ledger + failure refunds.
 14. **Publishing:** encrypted per-workspace YouTube OAuth refresh tokens + resumable/chunked uploads.
 15. **Workspace isolation:** background job polling is restricted to the signed workspace that created the job.
-16. **Authentication:** production rejects shared auto-login, visible OTPs, weak keys, and unencrypted SMTP. Account identity takes precedence over stale workspace cookies; production media requires an active login.
+16. **Authentication:** production rejects shared auto-login, unacknowledged visible OTPs, weak keys, and unencrypted SMTP. A restricted demo may show OTPs without SMTP only with both `DEMO_AUTH_SHOW_OTP=true` and `ALLOW_PRODUCTION_DEMO_AUTH=true`; this warns because anyone reaching login can sign in as any email. Account identity takes precedence over stale workspace cookies; production media requires an active login.
 17. **Deploy verification:** a failed backup stops deployment. Both containers, both loopback ports, and both public HTTPS routes are checked before success.
 
 ## Required launch checks
 
 - `.env` mode 600 and not tracked by Git.
 - rotate any token previously pasted into chat/terminal history before public launch.
-- `TRIVEN_SECRET_KEY` set to at least 32 random characters and real SMTP sign-in tested.
+- `TRIVEN_SECRET_KEY` set to at least 32 random characters; real SMTP sign-in tested for public launch, or both demo flags enabled with proxy access restricted for a demo.
 - Stripe Checkout and webhook verified before `BILLING_ENFORCE_CREDITS=true`.
 - YouTube OAuth callback registered exactly and private uploads tested before allowing public/unlisted.
 - LTX repository revision pinned after the current long-video profile is benchmarked.

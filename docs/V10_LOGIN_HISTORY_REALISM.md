@@ -4,11 +4,11 @@
 
 ### 1. Demo email + OTP login
 
-Cinema Studio has an account gate. A user enters an email and the API creates a cryptographically random six-digit OTP. This document describes the earlier private demo, where the code appeared in the login screen. Production at `cinema.devansh.info` now requires real SMTP delivery and rejects demo mode; use [the production runbook](PRODUCTION.md) for deployment.
+Cinema Studio has an account gate. A user enters an email and the API creates a cryptographically random six-digit OTP. This document describes the earlier private demo, where the code appeared in the login screen. Production at `cinema.devansh.info` defaults to real SMTP delivery; a restricted demo requires both `DEMO_AUTH_SHOW_OTP=true` and `ALLOW_PRODUCTION_DEMO_AUTH=true`. Use [the production runbook](PRODUCTION.md) for deployment.
 
 The OTP is stored only as an HMAC digest, expires, has a bounded attempt count, and is exchanged for an HttpOnly signed session cookie. A returning email maps to the same stable workspace, which means Elements, billing/integration state, generated assets, and chat history remain attached to the account.
 
-Production warning: `DEMO_AUTH_SHOW_OTP=true` is intentionally demo-only because anyone who can see the login page can also see the code. Before a public production launch, set it to `false` and deliver the OTP through a verified email/SMS provider.
+Production warning: anyone reaching the demo login can sign in as any email, including existing accounts. Restrict demo access at the proxy. Before a public production launch, set both demo flags to `false` and deliver the OTP through a verified SMTP provider.
 
 ### 2. Account-owned Previous Chats
 
@@ -51,7 +51,7 @@ CHAT_HISTORY_LIMIT=100
 CHAT_WORKSPACE_MAX_BYTES=1500000
 ```
 
-Use `DEMO_AUTH_SHOW_OTP=true` only for local development. Production requires `false` and a real SMTP delivery provider.
+The settings above show local demo mode. On a production host, additionally set `ALLOW_PRODUCTION_DEMO_AUTH=true` for a restricted demo without SMTP. For email-verified sign-in, set both demo flags to `false` and configure a real SMTP delivery provider.
 
 ## Modal redeploy required
 

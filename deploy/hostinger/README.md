@@ -53,7 +53,7 @@ nano .env
 
 Paste the generated value into `TRIVEN_SECRET_KEY`. Fill in:
 
-- `SMTP_HOST`, `SMTP_FROM`, and the username/password required by your SMTP provider. Use `starttls`/587 or `ssl`/465.
+- For email sign-in: `SMTP_HOST`, `SMTP_FROM`, and the username/password required by your SMTP provider. Use `starttls`/587 or `ssl`/465. For a restricted demo without SMTP, see below.
 - `GEMINI_API_KEY` for planning and image generation.
 - Dedicated `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, plus the deployed app/function names.
 
@@ -68,16 +68,33 @@ CORS_ORIGINS=""
 AUTH_ENABLED=true
 AUTO_LOGIN_EMAIL=""
 DEMO_AUTH_SHOW_OTP=false
+ALLOW_PRODUCTION_DEMO_AUTH=false
 ENABLE_SYNC_RENDER_ENDPOINTS=false
 JOB_WORKERS=1
 JOB_MAX_PENDING=3
 ```
 
-The API rejects shared auto-login, demo codes, weak signing keys, missing SMTP, and other unsafe production settings.
+The API rejects shared auto-login, unacknowledged demo codes, weak signing keys, and missing SMTP for email sign-in.
 Never place server credentials in `NEXT_PUBLIC_*` variables. Keep the signing secret stable across releases.
 Email login verifies identity; it does not by itself limit who may register or spend render credits. Before public use,
 configure and test Stripe credit enforcement or restrict admission at the reverse proxy. See
 [the production runbook](../../docs/PRODUCTION.md) and [billing/YouTube setup](../../docs/AI_VIDEO_FACTORY.md).
+
+### Restricted demo without SMTP
+
+For browser-visible OTPs on this production host, edit the VPS `.env`:
+
+```env
+AUTH_ENABLED=true
+AUTO_LOGIN_EMAIL=""
+DEMO_AUTH_SHOW_OTP=true
+ALLOW_PRODUCTION_DEMO_AUTH=true
+```
+
+Both demo flags must be `true` to make SMTP optional. Configured SMTP must still use TLS.
+Preflight and startup warn because anyone reaching the login can sign in as any email, including existing accounts;
+restrict demo access at the proxy. Continue with the deployment steps below. To restore email verification,
+configure SMTP, set both demo flags to `false`, and redeploy.
 
 ## 3. Deploy the Modal worker
 
@@ -147,7 +164,7 @@ curl -fsS -o /dev/null https://cinema.devansh.info/
 curl -s -o /dev/null -w '%{http_code}\n' https://cinema.devansh.info/api/v1/elements
 ```
 
-Sign in using a real emailed code, upload an Element, and run one short Draft to verify the external providers. Check
+Sign in using a real emailed code (or the displayed code in restricted demo mode), upload an Element, and run one short Draft to verify the external providers. Check
 that a second account cannot read the first account's media. Register these URLs if enabling integrations:
 
 - Stripe webhook: `https://cinema.devansh.info/api/v1/billing/webhook`

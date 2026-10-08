@@ -114,10 +114,11 @@ class Settings(BaseSettings):
     continuity_qc_timeout_seconds: float = 12.0
     continuity_qc_max_frames: int = 5
 
-    # Local demo login can return the OTP without an email provider. Production
-    # refuses to start until this is disabled and SMTP delivery is configured.
+    # Demo login returns the OTP without an email provider. Production requires
+    # a separate explicit opt-in because showing codes permits account impersonation.
     auth_enabled: bool = True
     demo_auth_show_otp: bool = True
+    allow_production_demo_auth: bool = False
     auth_otp_ttl_seconds: int = 600
     auth_otp_max_attempts: int = 5
     auth_session_days: int = 30
@@ -125,8 +126,8 @@ class Settings(BaseSettings):
     # straight in the studio. They all share one workspace (elements, projects, renders) and anyone who can
     # reach the URL can spend GPU credits. Development only; production requires it empty.
     auto_login_email: str = ""
-    # Real sign-in email delivery. Without SMTP the only way in is demo mode, which shows the code
-    # in the browser and is not acceptable for a public deployment.
+    # Real sign-in email delivery. Without SMTP the only way in is demo mode;
+    # production demos must opt in and restrict access at the proxy.
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
@@ -214,11 +215,12 @@ class Settings(BaseSettings):
             valid_frontend = False
         if not valid_frontend:
             errors.append("FRONTEND_URL must be the public HTTPS origin, for example https://cinema.devansh.info.")
-        if not self.smtp_configured:
+        production_demo_auth = self.demo_auth_show_otp and self.allow_production_demo_auth
+        if not self.smtp_configured and not production_demo_auth:
             errors.append(
                 "Production sign-in needs email delivery: set SMTP_HOST and SMTP_FROM."
             )
-        if self.smtp_security.strip().lower() not in {"starttls", "ssl"}:
+        if self.smtp_configured and self.smtp_security.strip().lower() not in {"starttls", "ssl"}:
             errors.append("SMTP_SECURITY must be starttls or ssl in production to protect sign-in codes and credentials.")
         if not self.auth_enabled:
             errors.append("AUTH_ENABLED must be true in production; Studio APIs require a login.")
@@ -227,7 +229,17 @@ class Settings(BaseSettings):
                 "AUTO_LOGIN_EMAIL must be empty in production; open access exposes a shared workspace and GPU credits."
             )
         if self.demo_auth_show_otp:
-            errors.append("DEMO_AUTH_SHOW_OTP must be false in production; exposing codes allows account impersonation.")
+            if self.allow_production_demo_auth:
+                warnings.append(
+                    "ALLOW_PRODUCTION_DEMO_AUTH=true and DEMO_AUTH_SHOW_OTP=true: sign-in codes are visible in the "
+                    "browser. Anyone with access can sign in as any email, access its workspace, and spend GPU credits. "
+                    "Restrict access at the reverse proxy."
+                )
+            else:
+                errors.append(
+                    "DEMO_AUTH_SHOW_OTP must be false in production unless ALLOW_PRODUCTION_DEMO_AUTH=true "
+                    "explicitly enables a restricted demo."
+                )
         if self.enable_sync_render_endpoints:
             errors.append("ENABLE_SYNC_RENDER_ENDPOINTS must be false in production to enforce the bounded render queue.")
         if any("*" in origin for origin in self.cors_origin_list):

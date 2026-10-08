@@ -215,9 +215,12 @@ python3 scripts/production_preflight.py
 ./scripts/status_hostinger.sh
 ```
 
-The API refuses to start in production with an unsafe configuration (weak signing secret, debug enabled, shared auto-login,
-visible demo codes, missing encrypted SMTP, or unbounded synchronous renders). Containers run as an unprivileged user, ship health checks, and CI builds and smoke-tests both images on
-every push. See **`docs/PRODUCTION.md`** for the full runbook (Modal worker deploy, start frames, backups, rollback,
+The API refuses to start in production with a weak signing secret, debug enabled, shared auto-login,
+unacknowledged demo codes, missing encrypted SMTP for email sign-in, or unbounded synchronous renders. A restricted demo
+can show OTPs without SMTP by setting both `DEMO_AUTH_SHOW_OTP=true` and `ALLOW_PRODUCTION_DEMO_AUTH=true`; anyone
+reaching its login can sign in as any email, so restrict access at the proxy. Containers run as an unprivileged user,
+ship health checks, and CI builds and smoke-tests both images on every push. See **`docs/PRODUCTION.md`** for the full
+runbook (Modal worker deploy, start frames, backups, rollback,
 security notes and the pre-release checklist).
 
 ## Main API endpoints

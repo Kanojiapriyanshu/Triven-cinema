@@ -20,6 +20,7 @@ SAFE = dict(
     auth_enabled=True,
     auto_login_email="",
     demo_auth_show_otp=False,
+    allow_production_demo_auth=False,
     smtp_host="smtp.example.test",
     smtp_from="no-reply@example.test",
     enable_sync_render_endpoints=False,
@@ -48,9 +49,45 @@ class ProductionProblemsTests(unittest.TestCase):
         errors, _ = make(smtp_host="", smtp_from="", demo_auth_show_otp=False).production_problems()
         self.assertTrue(any("SMTP_HOST" in item for item in errors))
 
-    def test_demo_mode_blocks_startup(self):
+    def test_demo_mode_blocks_startup_without_explicit_opt_in(self):
         errors, _ = make(demo_auth_show_otp=True).production_problems()
         self.assertTrue(any("DEMO_AUTH_SHOW_OTP" in item for item in errors))
+        self.assertTrue(any("ALLOW_PRODUCTION_DEMO_AUTH" in item for item in errors))
+
+    def test_explicit_production_demo_allows_no_smtp_with_a_warning(self):
+        errors, warnings = make(
+            demo_auth_show_otp=True, allow_production_demo_auth=True,
+            smtp_host="", smtp_from="", smtp_security="none",
+        ).production_problems()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("any email", warnings[0])
+        self.assertIn("ALLOW_PRODUCTION_DEMO_AUTH", warnings[0])
+
+    def test_demo_opt_in_alone_does_not_bypass_email_delivery(self):
+        errors, _ = make(allow_production_demo_auth=True, smtp_host="", smtp_from="").production_problems()
+        self.assertTrue(any("SMTP_HOST" in item for item in errors))
+
+    def test_demo_keeps_configured_smtp_encrypted(self):
+        errors, _ = make(
+            demo_auth_show_otp=True, allow_production_demo_auth=True, smtp_security="none",
+        ).production_problems()
+        self.assertTrue(any("SMTP_SECURITY" in item for item in errors))
+
+    def test_production_demo_does_not_bypass_other_safeguards(self):
+        for overrides, setting in (
+            ({"triven_secret_key": "short"}, "TRIVEN_SECRET_KEY"),
+            ({"auth_enabled": False}, "AUTH_ENABLED"),
+            ({"auto_login_email": "shared@example.test"}, "AUTO_LOGIN_EMAIL"),
+            ({"debug": True}, "DEBUG"),
+            ({"enable_sync_render_endpoints": True}, "ENABLE_SYNC_RENDER_ENDPOINTS"),
+        ):
+            with self.subTest(setting=setting):
+                errors, _ = make(
+                    demo_auth_show_otp=True, allow_production_demo_auth=True,
+                    smtp_host="", smtp_from="", **overrides,
+                ).production_problems()
+                self.assertTrue(any(setting in item for item in errors))
 
     def test_other_risky_settings_block_startup(self):
         errors, warnings = make(enable_sync_render_endpoints=True, cors_origins="*", triven_secret_key="short-secret", gemini_api_key="").production_problems()
@@ -212,6 +249,37 @@ class SignInRouteTests(unittest.TestCase):
             response = self._request()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["demo_otp"]), 6)
+
+    def test_production_demo_sign_in_without_smtp_creates_secure_session(self):
+        production = {key: value for key, value in SAFE.items() if key != "_env_file"}
+        production.update(
+            demo_auth_show_otp=True, allow_production_demo_auth=True, smtp_host="", smtp_from="",
+        )
+        with patch.multiple(settings, **production), patch("app.api.routes.auth.send_otp_email") as send, \
+                self.assertLogs("triven.api", level="WARNING") as logs:
+            with TestClient(app, base_url="https://cinema.devansh.info") as client:
+                self.assertEqual(client.get("/api/v1/elements").status_code, 401)
+                requested = client.post("/api/v1/auth/otp/request", json={"email": "demo@example.test"})
+                self.assertEqual(requested.status_code, 200)
+                body = requested.json()
+                self.assertTrue(body["demo_mode"])
+                self.assertRegex(body["demo_otp"], r"^\d{6}$")
+                self.assertEqual(requested.headers["cache-control"], "no-store")
+                verified = client.post(
+                    "/api/v1/auth/otp/verify", json={"email": "demo@example.test", "otp": body["demo_otp"]},
+                )
+                self.assertEqual(verified.status_code, 200)
+                self.assertTrue(verified.json()["authenticated"])
+                for cookie in verified.headers.get_list("set-cookie"):
+                    self.assertIn("Secure", cookie)
+                    self.assertIn("HttpOnly", cookie)
+                self.assertTrue(client.get("/api/v1/auth/me").json()["authenticated"])
+                self.assertEqual(client.post("/api/v1/identity/bootstrap").status_code, 200)
+                self.assertEqual(client.post("/api/v1/auth/logout").status_code, 200)
+                self.assertFalse(client.get("/api/v1/auth/me").json()["authenticated"])
+                self.assertEqual(client.get("/api/v1/elements").status_code, 401)
+        send.assert_not_called()
+        self.assertTrue(any("ALLOW_PRODUCTION_DEMO_AUTH" in line for line in logs.output))
 
 
 if __name__ == "__main__":

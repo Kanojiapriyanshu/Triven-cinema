@@ -38,9 +38,9 @@ Production startup blocks unsafe authentication and rendering configuration:
   `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` and keep it stable in your secret manager.
   It signs sessions and encrypts stored YouTube tokens. Changing it signs users out and prevents decrypting old tokens.
 - `TRIVEN_DOMAIN=cinema.devansh.info`, `FRONTEND_URL=https://cinema.devansh.info`, `APP_ENV=production`, `DEBUG=false`.
-- `AUTH_ENABLED=true`, `AUTO_LOGIN_EMAIL=""`, `DEMO_AUTH_SHOW_OTP=false`. Each user signs in with an emailed code.
-  Shared auto-login and visible demo codes are available only for local development.
-- `SMTP_HOST`, `SMTP_FROM` (a verified sender), and your provider's `SMTP_USERNAME` / `SMTP_PASSWORD`.
+- `AUTH_ENABLED=true`, `AUTO_LOGIN_EMAIL=""`, `DEMO_AUTH_SHOW_OTP=false`, `ALLOW_PRODUCTION_DEMO_AUTH=false`.
+  Each user signs in with an emailed code. Shared auto-login is available only for local development.
+- For email sign-in: `SMTP_HOST`, `SMTP_FROM` (a verified sender), and your provider's `SMTP_USERNAME` / `SMTP_PASSWORD`.
   Use `SMTP_SECURITY=starttls` (usually port 587) or `ssl` (usually port 465).
 - `VIDEO_PROVIDER=modal`, dedicated `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`, and the deployed Modal app/function names.
 - `ENABLE_SYNC_RENDER_ENDPOINTS=false`, `JOB_WORKERS=1`, and a small positive `JOB_MAX_PENDING`.
@@ -50,6 +50,23 @@ Production startup blocks unsafe authentication and rendering configuration:
 Email verification allows people who can receive codes to create accounts. With `BILLING_ENFORCE_CREDITS=false`,
 those users can still submit operator-funded renders. For a public paid service, finish the Stripe checkout/webhook
 verification and enable credit enforcement before admitting users; otherwise restrict access at the proxy.
+
+### Restricted demo without SMTP
+
+To show the sign-in code in the browser on the production host, set both flags in the VPS `.env`:
+
+```env
+AUTH_ENABLED=true
+AUTO_LOGIN_EMAIL=""
+DEMO_AUTH_SHOW_OTP=true
+ALLOW_PRODUCTION_DEMO_AUTH=true
+```
+
+SMTP is optional only while both demo flags are true. If SMTP is configured, it must still use TLS.
+Preflight and startup report a warning: anyone reaching the login can sign in as any email, including existing accounts.
+Restrict access at the proxy for this demo. Run `python3 scripts/production_preflight.py`, then deploy with
+`bash scripts/deploy_hostinger.sh` (add `--skip-public-check` only before TLS setup). To restore email verification,
+configure SMTP and set both demo flags to `false` before redeploying.
 
 ### GPU worker (Modal)
 
@@ -106,7 +123,7 @@ motion and voice stay the same; re-rendering at 1080p produces a different video
 
 - [ ] `python3 scripts/production_preflight.py` has no `[FAIL]`
 - [ ] `TRIVEN_SECRET_KEY` set and backed up in a password manager
-- [ ] Email sign-in tested with real SMTP, `DEMO_AUTH_SHOW_OTP=false`, and `AUTO_LOGIN_EMAIL=""`
+- [ ] Public launch: email sign-in tested with real SMTP, both demo flags `false`, and `AUTO_LOGIN_EMAIL=""`; restricted demo: both demo flags `true` and proxy access restricted
 - [ ] `modal deploy modal/app.py` done and one Draft rendered end to end
 - [ ] Gemini billing enabled (or creators told to upload their own start frame)
 - [ ] TLS, certificate renewal, and both public web/API health checks verified
