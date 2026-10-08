@@ -59,6 +59,7 @@ export interface ElementBinding {
   wardrobe_policy: ElementWardrobePolicy;
   strength: number;
   apply_to_all_scenes: boolean;
+  cast_role?: "auto" | "cast";
 }
 export type JobStageName =
   | "queued"
@@ -385,6 +386,8 @@ export interface FactoryGenerationRequest {
   continuity_max_retries?: number;
   enhance_prompt: boolean;
   element_bindings?: ElementBinding[];
+  start_frame_filename?: string | null;
+  hero_frame_filename?: string | null;
   publish_to_youtube: boolean;
   youtube_title?: string | null;
   youtube_description?: string;
@@ -432,6 +435,8 @@ export interface FactoryGenerationResponse {
   audio_warnings: string[];
   elements_used: string[];
   element_reference_mode: string | null;
+  continuity_frame_filename: string | null;
+  continuity_frame_url: string | null;
   youtube_video_id: string | null;
   youtube_url: string | null;
   youtube_privacy: YouTubePrivacy | null;
@@ -478,4 +483,42 @@ export interface YouTubePublishResponse {
   youtube_url: string;
   privacy: YouTubePrivacy;
   title: string;
+}
+
+export interface HeroFrameRequest {
+  prompt: string;
+  aspect_ratio: AspectRatio;
+  element_bindings: ElementBinding[];
+}
+
+export interface HeroFrameResponse {
+  filename: string;
+  url: string;
+  model: string;
+  elements: string[];
+}
+
+export interface UpscaleRequest {
+  source_filename: string;
+  quality?: "1080p";
+  seed?: number;
+}
+
+export interface UpscaleResponse {
+  final_video_url: string;
+  final_download_url: string;
+  final_filename: string;
+  source_filename: string;
+  quality: "1080p";
+  aspect_ratio: string;
+  quality_note: string;
+  has_audio: boolean;
+  width: number | null;
+  height: number | null;
+  duration_seconds: number | null;
+  provider: string;
+  gpu: string | null;
+  total_render_seconds: number;
+  estimated_cost_usd: number | null;
+  cost_note: string;
 }

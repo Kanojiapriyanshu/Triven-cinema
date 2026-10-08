@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const internalApi = process.env.TRIVEN_INTERNAL_API_URL || "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
+  // A second dev server (for previews/tests) needs its own build folder.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   poweredByHeader: false,
   compress: true,
   async rewrites() {

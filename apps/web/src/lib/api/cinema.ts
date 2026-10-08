@@ -21,6 +21,9 @@ import type {
   VideoGenerationResponse,
   YouTubePublishResponse,
   YouTubeStatusResponse,
+  HeroFrameRequest,
+  HeroFrameResponse,
+  UpscaleRequest,
 } from "@/lib/types/generation";
 
 // Production is same-origin through host Nginx. Empty is intentional.
@@ -422,4 +425,26 @@ export async function publishToYouTube(payload: {
 export function absoluteApiUrl(path: string): string {
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
   return `${API_URL}${path}`;
+}
+
+export async function createHeroFrame(payload: HeroFrameRequest): Promise<HeroFrameResponse> {
+  return apiJson(
+    "/api/v1/factory/hero-frame",
+    { method: "POST", body: JSON.stringify(payload) },
+    "Unable to create the start frame."
+  );
+}
+
+export async function createUpscaleJob(payload: UpscaleRequest): Promise<AsyncVideoGenerationResponse> {
+  return apiJson(
+    "/api/v1/factory/upscale",
+    { method: "POST", body: JSON.stringify(payload) },
+    "Unable to start the Full HD upscale."
+  );
+}
+
+export async function uploadHeroFrame(file: File): Promise<HeroFrameResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  return apiJson("/api/v1/factory/hero-frame/upload", { method: "POST", body: form }, "Unable to upload the start frame.");
 }
