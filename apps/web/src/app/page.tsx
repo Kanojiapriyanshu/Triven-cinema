@@ -517,6 +517,7 @@ function PromptHighlight({ text, elements }: { text: string; elements: CinemaEle
 export default function Home() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
+  const [openAccess, setOpenAccess] = useState(false);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginOtp, setLoginOtp] = useState("");
   const [demoOtp, setDemoOtp] = useState<string | null>(null);
@@ -721,6 +722,7 @@ export default function Home() {
         const session = await getAuthMe();
         if (!active) return;
         setAuthUser(session.authenticated ? session.user : null);
+        setOpenAccess(Boolean(session.open_access));
       } catch {
         if (active) setAuthUser(null);
       } finally {
@@ -1921,7 +1923,7 @@ export default function Home() {
               <div className="kv"><span>Characters per shot</span><span>{capabilities?.elements?.max_active_per_scene ?? 6}</span></div>
               {billingCatalog?.enabled && billingMe?.stripe_customer_id ? <button type="button" onClick={handleBillingPortal} className="btn btn-secondary btn-sm btn-block" style={{ marginTop: "0.6rem" }} disabled={integrationBusy}>Manage billing</button> : null}
               {youtube?.enabled ? <button type="button" disabled={integrationBusy} onClick={handleYouTubeConnection} className="btn btn-secondary btn-sm btn-block" style={{ marginTop: "0.5rem" }}>{youtube.connected ? "Disconnect YouTube" : "Connect YouTube"}</button> : null}
-              <button type="button" onClick={handleLogout} disabled={isBusy} className="btn btn-ghost btn-sm btn-block" style={{ marginTop: "0.5rem" }}>Sign out</button>
+              {!openAccess && <button type="button" onClick={handleLogout} disabled={isBusy} className="btn btn-ghost btn-sm btn-block" style={{ marginTop: "0.5rem" }}>Sign out</button>}
             </div>
           </details>
         </div>

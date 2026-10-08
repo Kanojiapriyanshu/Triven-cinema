@@ -27,7 +27,7 @@ def _user_response(user: dict) -> AuthUserResponse:
 
 @router.post("/otp/request", response_model=RequestOtpResponse)
 def request_login_otp(payload: RequestOtpRequest) -> RequestOtpResponse:
-    if not settings.auth_enabled:
+    if not settings.auth_enabled or settings.auto_login_email.strip():
         raise HTTPException(status_code=404, detail="Cinema login is disabled.")
     if not settings.smtp_configured and not settings.demo_auth_show_otp:
         raise HTTPException(status_code=503, detail="Sign-in email is not configured on this server.")
@@ -50,7 +50,7 @@ def request_login_otp(payload: RequestOtpRequest) -> RequestOtpResponse:
 
 @router.post("/otp/verify", response_model=AuthMeResponse)
 def verify_login_otp(payload: VerifyOtpRequest, request: Request, response: Response) -> AuthMeResponse:
-    if not settings.auth_enabled:
+    if not settings.auth_enabled or settings.auto_login_email.strip():
         raise HTTPException(status_code=404, detail="Cinema login is disabled.")
     try:
         user = verify_otp(
@@ -71,7 +71,7 @@ def auth_me(request: Request) -> AuthMeResponse:
     user = auth_user_from_request(request)
     if not user:
         return AuthMeResponse(authenticated=False, user=None)
-    return AuthMeResponse(authenticated=True, user=_user_response(user))
+    return AuthMeResponse(authenticated=True, user=_user_response(user), open_access=bool(settings.auto_login_email.strip()))
 
 
 @router.post("/logout")

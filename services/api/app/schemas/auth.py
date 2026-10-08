@@ -50,3 +50,5 @@ class AuthUserResponse(BaseModel):
 class AuthMeResponse(BaseModel):
     authenticated: bool
     user: AuthUserResponse | None = None
+    # True when the server is in open-access mode (no sign-in; everyone shares one account).
+    open_access: bool = False

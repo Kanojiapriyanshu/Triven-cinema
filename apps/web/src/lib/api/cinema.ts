@@ -44,6 +44,7 @@ export interface AuthUser {
 }
 
 export interface AuthMeResponse {
+  open_access?: boolean;
   authenticated: boolean;
   user: AuthUser | null;
 }

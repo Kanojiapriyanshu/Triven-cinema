@@ -24,6 +24,18 @@ docker compose -f docker-compose.production.yml ps          # api and web should
 curl -fsS http://127.0.0.1:3334/api/v1/health/ready
 ```
 
+### Open access (no sign-in)
+
+`AUTO_LOGIN_EMAIL=studio@triven.local` (the default in the templates) removes the sign-in: every visitor is signed in
+automatically as that account and lands in the studio. Consequences to accept knowingly:
+
+- everyone shares **one** workspace (characters, projects, renders, credits);
+- anyone who can open the URL can start paid GPU renders. Restrict access at the proxy (VPN, IP allow-list or HTTP basic
+  auth in Nginx/Caddy) and keep `JOB_MAX_PENDING` low.
+
+An account that already exists for that email keeps its data, so point it at your own account email to keep your existing
+Elements. Clear the value (and set `SMTP_*`) to go back to email sign-in.
+
 ### Required settings
 
 The API **refuses to start** when these are wrong (the error names the setting):
@@ -31,7 +43,7 @@ The API **refuses to start** when these are wrong (the error names the setting):
 - `TRIVEN_SECRET_KEY` - at least 32 random characters. `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
   It signs sessions and encrypts stored YouTube tokens. Changing it signs everyone out.
 - `DEBUG=false`.
-- A way to deliver sign-in codes: `SMTP_HOST` + `SMTP_FROM` (plus `SMTP_USERNAME`/`SMTP_PASSWORD`,
+- A way to sign in: `AUTO_LOGIN_EMAIL` (open access) or, for email sign-in, `SMTP_HOST` + `SMTP_FROM` (plus `SMTP_USERNAME`/`SMTP_PASSWORD`,
   `SMTP_SECURITY=starttls|ssl|none`). `DEMO_AUTH_SHOW_OTP=true` shows the code in the browser and only belongs on a
   private demo.
 - `BILLING_ENABLED=true` also needs the Stripe keys.
@@ -91,7 +103,7 @@ motion and voice stay the same; re-rendering at 1080p produces a different video
 
 - [ ] `python3 scripts/production_preflight.py` has no `[FAIL]`
 - [ ] `TRIVEN_SECRET_KEY` set and backed up in a password manager
-- [ ] SMTP tested with a real address; `DEMO_AUTH_SHOW_OTP=false`
+- [ ] Either email sign-in works (SMTP tested, `DEMO_AUTH_SHOW_OTP=false`) or open access is deliberately on and the site is protected at the proxy
 - [ ] `modal deploy modal/app.py` done and one Draft rendered end to end
 - [ ] Gemini billing enabled (or creators told to upload their own start frame)
 - [ ] TLS and the public domain verified through Nginx/Caddy

@@ -10,7 +10,13 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.routes import auth, billing, chats, elements, factory, generations, health, youtube
 from app.core.config import settings
-from app.services.auth_service import auth_user_from_request, authenticated_workspace_id, initialize_auth_store
+from app.services.auth_service import (
+    AuthError,
+    auth_user_from_request,
+    authenticated_workspace_id,
+    auto_login_user,
+    initialize_auth_store,
+)
 from app.services.billing_service import initialize_billing_store
 from app.services.chat_service import initialize_chat_store
 from app.services.element_service import initialize_element_store
@@ -48,6 +54,12 @@ async def lifespan(_: FastAPI):
             raise RuntimeError("Unsafe production configuration, refusing to start: " + " | ".join(blockers))
     initialize_job_store()
     initialize_auth_store()
+    try:
+        shared = auto_login_user()  # fails fast on an invalid AUTO_LOGIN_EMAIL and warms the cache
+    except AuthError as exc:
+        raise RuntimeError(f"AUTO_LOGIN_EMAIL is not a valid email address: {exc}") from exc
+    if shared:
+        LOGGER.warning("Open access is ON: everyone is signed in as %s and shares one workspace.", shared["email"])
     initialize_chat_store()
     initialize_element_store()
     initialize_billing_store()

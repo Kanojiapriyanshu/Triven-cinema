@@ -121,6 +121,10 @@ class Settings(BaseSettings):
     auth_otp_ttl_seconds: int = 600
     auth_otp_max_attempts: int = 5
     auth_session_days: int = 30
+    # Open access: when set, nobody signs in. Every visitor is the one account with this email and lands
+    # straight in the studio. They all share one workspace (elements, projects, renders) and anyone who can
+    # reach the URL can spend GPU credits. Leave empty to require the email sign-in.
+    auto_login_email: str = ""
     # Real sign-in email delivery. Without SMTP the only way in is demo mode, which shows the code
     # in the browser and is not acceptable for a public deployment.
     smtp_host: str = ""
@@ -199,13 +203,18 @@ class Settings(BaseSettings):
             warnings.append("TRIVEN_SECRET_KEY is short; use at least 32 random characters.")
         if self.debug:
             errors.append("DEBUG must be false in production (it exposes internal error text).")
-        if self.auth_enabled and not self.demo_auth_show_otp and not self.smtp_configured:
+        if self.auth_enabled and not self.auto_login_email.strip() and not self.demo_auth_show_otp and not self.smtp_configured:
             errors.append(
                 "Login is enabled but there is no way to deliver sign-in codes: set SMTP_HOST and SMTP_FROM "
                 "(or, for a private demo only, DEMO_AUTH_SHOW_OTP=true)."
             )
         if not self.auth_enabled:
             warnings.append("AUTH_ENABLED=false leaves every Studio API open without a login.")
+        if self.auth_enabled and self.auto_login_email.strip():
+            warnings.append(
+                "AUTO_LOGIN_EMAIL is set: there is no sign-in. Anyone who can reach this URL uses the same shared "
+                "workspace and can spend GPU credits. Put it behind a VPN/IP allow-list or basic auth, or clear it."
+            )
         if self.demo_auth_show_otp:
             warnings.append("DEMO_AUTH_SHOW_OTP=true shows the sign-in code in the browser: anyone can sign in as any email.")
         if self.enable_sync_render_endpoints:

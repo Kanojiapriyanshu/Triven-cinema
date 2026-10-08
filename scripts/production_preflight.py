@@ -145,13 +145,18 @@ def main() -> int:
             ok("TRIVEN_SECRET_KEY configured for signed login sessions")
         else:
             fail("TRIVEN_SECRET_KEY is required when AUTH_ENABLED=true in production")
+        if env.get("AUTO_LOGIN_EMAIL", "").strip():
+            warn(
+                "AUTO_LOGIN_EMAIL is set: no sign-in, everyone shares one workspace and can spend GPU credits. "
+                "Restrict access at the proxy (VPN, IP allow-list or basic auth)."
+            )
         demo_otp = env.get("DEMO_AUTH_SHOW_OTP", "true").lower() in {"true", "1", "yes"}
         smtp_ready = bool(env.get("SMTP_HOST", "").strip() and env.get("SMTP_FROM", "").strip())
         if smtp_ready:
             ok("SMTP configured: sign-in codes are emailed")
         if demo_otp:
             warn("DEMO_AUTH_SHOW_OTP=true exposes the OTP in the browser; keep this only for a private demo")
-        elif not smtp_ready:
+        elif not smtp_ready and not env.get("AUTO_LOGIN_EMAIL", "").strip():
             fail("DEMO_AUTH_SHOW_OTP=false but SMTP_HOST/SMTP_FROM are empty: nobody could sign in (the API will not start)")
         if len(env.get("TRIVEN_SECRET_KEY", "")) and len(env.get("TRIVEN_SECRET_KEY", "")) < 32:
             warn("TRIVEN_SECRET_KEY is shorter than 32 characters")

@@ -23,6 +23,7 @@ AUTH_DB = AUTH_DIR / "auth.sqlite3"
 AUTH_COOKIE_NAME = "triven_auth"
 _DB_LOCK = Lock()
 _INITIALIZED = False
+_AUTO_USER: dict[str, dict] = {}
 
 
 class AuthError(RuntimeError):
@@ -253,13 +254,34 @@ def verify_auth_token(token: str | None) -> dict | None:
     return dict(row) if row else None
 
 
+def auto_login_user() -> dict | None:
+    """The shared account for open-access mode (AUTO_LOGIN_EMAIL), created on first use. None when it is off.
+
+    An account that already exists for that email keeps its workspace, so existing Elements and projects stay visible.
+    """
+    configured = settings.auto_login_email.strip()
+    if not configured:
+        return None
+    email_key = normalize_email(configured)
+    cached = _AUTO_USER.get(email_key)
+    if cached is not None:
+        return cached
+    initialize_auth_store()
+    with _DB_LOCK, closing(_connect()) as connection:
+        user = _get_or_create_user(connection, email_key, None)
+        connection.commit()
+    _AUTO_USER[email_key] = {"id": user["id"], "email": user["email"], "workspace_id": user["workspace_id"]}
+    return _AUTO_USER[email_key]
+
+
 def auth_user_from_request(request: Request) -> dict | None:
     # Middleware and route dependencies often ask for the same authenticated
     # account during one request. Cache the verified row on request.state so
     # polling-heavy generation endpoints do not hit SQLite twice per request.
     if getattr(request.state, "_triven_auth_checked", False):
         return getattr(request.state, "triven_auth_user", None)
-    user = verify_auth_token(request.cookies.get(AUTH_COOKIE_NAME))
+    # Open access ignores any old login cookie so every request maps to the same account and workspace.
+    user = auto_login_user() or verify_auth_token(request.cookies.get(AUTH_COOKIE_NAME))
     request.state.triven_auth_user = user
     request.state._triven_auth_checked = True
     return user
