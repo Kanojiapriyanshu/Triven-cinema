@@ -26,7 +26,7 @@ class ModalRetakeWorkerTests(unittest.TestCase):
             end_time=5,
             seed=7,
         )
-        self.assertEqual(command[0], "/opt/LTX-2/.venv/bin/python")
+        self.assertEqual(command[0], str(Path("/opt/LTX-2/.venv/bin/python")))
         self.assertTrue(command[1].endswith("retake_worker.py"))
         self.assertIn("--input-path", command)
         self.assertIn("--output-path", command)

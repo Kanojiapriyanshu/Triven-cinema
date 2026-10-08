@@ -1,17 +1,28 @@
 FROM python:3.12-slim
 
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.title="triven-cinema-api" \
+      org.opencontainers.image.description="Triven Cinema FastAPI backend" \
+      org.opencontainers.image.revision="${GIT_SHA}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app:/app/services/api
+    PYTHONPATH=/app:/app/services/api \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# ffmpeg ships ffprobe too; both are required after every GPU render. gosu drops root in the entrypoint.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 triven \
+    && useradd --system --uid 10001 --gid triven --home-dir /app --shell /usr/sbin/nologin triven \
+    && ffmpeg -version >/dev/null && ffprobe -version >/dev/null
 
 WORKDIR /app
 
 COPY services/api/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt
 
 COPY services /app/services
 COPY inference /app/inference
@@ -19,8 +30,19 @@ COPY video /app/video
 COPY modal /app/modal
 COPY scripts/cleanup_storage.py /app/scripts/cleanup_storage.py
 COPY scripts/backup_state.py /app/scripts/backup_state.py
-RUN mkdir -p /app/storage/generated /app/storage/metrics /app/storage/jobs /app/storage/billing /app/storage/integrations /app/storage/backups /app/storage/logs
+COPY docker/api-entrypoint.sh /usr/local/bin/api-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/api-entrypoint.sh \
+    && chmod 0755 /usr/local/bin/api-entrypoint.sh \
+    && mkdir -p /app/storage/generated /app/storage/metrics /app/storage/jobs /app/storage/billing \
+       /app/storage/integrations /app/storage/backups /app/storage/logs /app/storage/auth \
+       /app/storage/chats /app/storage/elements \
+    && chown -R triven:triven /app/storage
 
 EXPOSE 8000
 
+# Readiness also verifies ffmpeg/ffprobe, writable storage and free disk.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
+    CMD curl -fsS http://127.0.0.1:8000/api/v1/health/ready || exit 1
+
+ENTRYPOINT ["/usr/local/bin/api-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--app-dir", "/app/services/api", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header", "--timeout-graceful-shutdown", "600"]

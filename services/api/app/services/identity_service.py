@@ -22,10 +22,9 @@ def _secret() -> bytes:
     value = settings.triven_secret_key.strip()
     if value:
         return value.encode("utf-8")
-    if settings.is_production and (settings.billing_enabled or settings.youtube_enabled):
-        raise WorkspaceIdentityError(
-            "TRIVEN_SECRET_KEY must be configured when billing or YouTube is enabled."
-        )
+    if settings.is_production:
+        # Never sign workspace cookies with the public development key on a real deployment.
+        raise WorkspaceIdentityError("TRIVEN_SECRET_KEY must be configured in production.")
     return b"triven-cinema-development-only"
 
 

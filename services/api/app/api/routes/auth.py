@@ -10,6 +10,7 @@ from app.services.auth_service import (
     set_login_cookies,
     verify_otp,
 )
+from app.services.email_service import EmailDeliveryError, send_otp_email
 from app.services.identity_service import workspace_id_from_request
 
 
@@ -28,10 +29,17 @@ def _user_response(user: dict) -> AuthUserResponse:
 def request_login_otp(payload: RequestOtpRequest) -> RequestOtpResponse:
     if not settings.auth_enabled:
         raise HTTPException(status_code=404, detail="Cinema login is disabled.")
+    if not settings.smtp_configured and not settings.demo_auth_show_otp:
+        raise HTTPException(status_code=503, detail="Sign-in email is not configured on this server.")
     try:
         challenge_id, otp, ttl = request_otp(payload.email)
     except AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if settings.smtp_configured:
+        try:
+            send_otp_email(payload.email.strip(), otp, ttl)
+        except EmailDeliveryError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     return RequestOtpResponse(
         challenge_id=challenge_id,
         expires_in_seconds=ttl,

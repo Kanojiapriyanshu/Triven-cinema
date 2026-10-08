@@ -186,7 +186,5 @@ networks:
   triven_internal:
     driver: bridge
 
-
-volumes:
-  caddy_data:
-  caddy_config:
+# Persistent state lives in ./storage (SQLite databases, generated media, backups).
+# Back it up; the maintenance service writes dated snapshots to ./storage/backups.

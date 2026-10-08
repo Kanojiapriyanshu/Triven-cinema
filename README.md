@@ -204,6 +204,19 @@ The browser uses same-origin `/api` and `/media` routes through the existing hos
 
 For multi-instance production, move generated media/job state from local disk to object storage/Postgres before scaling horizontally.
 
+### Production quick start
+
+```bash
+cp .env.production.example .env      # set TRIVEN_SECRET_KEY, SMTP_*, GEMINI_API_KEY, MODAL_* ...
+python3 scripts/production_preflight.py
+docker compose -f docker-compose.production.yml up -d --build
+```
+
+The API refuses to start in production with an unsafe configuration (no signing secret, `DEBUG=true`, no way to deliver
+sign-in codes). Containers run as an unprivileged user, ship health checks, and CI builds and smoke-tests both images on
+every push. See **`docs/PRODUCTION.md`** for the full runbook (Modal worker deploy, start frames, backups, rollback,
+security notes and the pre-release checklist).
+
 ## Main API endpoints
 
 ```text

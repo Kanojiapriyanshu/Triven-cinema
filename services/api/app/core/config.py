@@ -121,6 +121,17 @@ class Settings(BaseSettings):
     auth_otp_ttl_seconds: int = 600
     auth_otp_max_attempts: int = 5
     auth_session_days: int = 30
+    # Real sign-in email delivery. Without SMTP the only way in is demo mode, which shows the code
+    # in the browser and is not acceptable for a public deployment.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_security: str = "starttls"  # starttls | ssl | none
+    smtp_timeout_seconds: float = 15.0
+    # Minimum gap between two codes for the same address when email is really sent (anti-spam).
+    auth_otp_cooldown_seconds: int = 30
 
     # Account-owned Studio history. Browser localStorage is only a cache; the
     # canonical previous-chat list lives in SQLite and follows the signed-in user.
@@ -173,6 +184,39 @@ class Settings(BaseSettings):
     # but bypass the bounded production job queue. Disable them on the public server.
     enable_sync_render_endpoints: bool = True
     enable_metrics_endpoint: bool = True
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.smtp_host.strip() and self.smtp_from.strip())
+
+    def production_problems(self) -> tuple[list[str], list[str]]:
+        """(blockers, warnings) for a public deployment. Blockers stop the API from starting."""
+        errors: list[str] = []
+        warnings: list[str] = []
+        if not self.triven_secret_key.strip():
+            errors.append("TRIVEN_SECRET_KEY is required: it signs login sessions and workspace cookies.")
+        elif len(self.triven_secret_key.strip()) < 24:
+            warnings.append("TRIVEN_SECRET_KEY is short; use at least 32 random characters.")
+        if self.debug:
+            errors.append("DEBUG must be false in production (it exposes internal error text).")
+        if self.auth_enabled and not self.demo_auth_show_otp and not self.smtp_configured:
+            errors.append(
+                "Login is enabled but there is no way to deliver sign-in codes: set SMTP_HOST and SMTP_FROM "
+                "(or, for a private demo only, DEMO_AUTH_SHOW_OTP=true)."
+            )
+        if not self.auth_enabled:
+            warnings.append("AUTH_ENABLED=false leaves every Studio API open without a login.")
+        if self.demo_auth_show_otp:
+            warnings.append("DEMO_AUTH_SHOW_OTP=true shows the sign-in code in the browser: anyone can sign in as any email.")
+        if self.enable_sync_render_endpoints:
+            warnings.append("ENABLE_SYNC_RENDER_ENDPOINTS=true bypasses the bounded render queue; set it to false.")
+        if "*" in self.cors_origin_list:
+            warnings.append("CORS_ORIGINS contains '*'; list the exact origins or leave it empty for same-origin traffic.")
+        if self.billing_enabled and not (self.stripe_secret_key and self.stripe_webhook_secret):
+            errors.append("BILLING_ENABLED=true needs STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.")
+        if not self.gemini_api_key:
+            warnings.append("GEMINI_API_KEY is empty: start frames, AI Director and quality checks are unavailable.")
+        return errors, warnings
 
     @property
     def is_production(self) -> bool:

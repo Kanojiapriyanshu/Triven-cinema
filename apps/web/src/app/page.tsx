@@ -759,6 +759,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) {
+      // Intentional: clear the project list the moment the signed-in account goes away.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setChatSessions([]);
       setActiveChatId(null);
       setChatHistoryReady(false);
@@ -839,6 +841,8 @@ export default function Home() {
     if (!activeChatId) {
       if (!prompt.trim()) return;
       const session = createChatSession(workspace);
+      // Intentional: the project is created the moment the first prompt is typed.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveChatId(session.id);
       setChatSessions((current) => {
         const sorted = [session, ...current].sort((a, b) => b.updatedAt - a.updatedAt);

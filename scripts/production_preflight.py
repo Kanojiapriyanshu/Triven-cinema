@@ -145,8 +145,16 @@ def main() -> int:
             ok("TRIVEN_SECRET_KEY configured for signed login sessions")
         else:
             fail("TRIVEN_SECRET_KEY is required when AUTH_ENABLED=true in production")
-        if env.get("DEMO_AUTH_SHOW_OTP", "true").lower() in {"true", "1", "yes"}:
-            warn("DEMO_AUTH_SHOW_OTP=true exposes the OTP in the browser; keep this only for the devansh.info demo")
+        demo_otp = env.get("DEMO_AUTH_SHOW_OTP", "true").lower() in {"true", "1", "yes"}
+        smtp_ready = bool(env.get("SMTP_HOST", "").strip() and env.get("SMTP_FROM", "").strip())
+        if smtp_ready:
+            ok("SMTP configured: sign-in codes are emailed")
+        if demo_otp:
+            warn("DEMO_AUTH_SHOW_OTP=true exposes the OTP in the browser; keep this only for a private demo")
+        elif not smtp_ready:
+            fail("DEMO_AUTH_SHOW_OTP=false but SMTP_HOST/SMTP_FROM are empty: nobody could sign in (the API will not start)")
+        if len(env.get("TRIVEN_SECRET_KEY", "")) and len(env.get("TRIVEN_SECRET_KEY", "")) < 32:
+            warn("TRIVEN_SECRET_KEY is shorter than 32 characters")
     else:
         warn("AUTH_ENABLED=false leaves Studio APIs without the login gate")
 

@@ -62,7 +62,7 @@ class CharacterContinuityTests(unittest.TestCase):
             reference_strength=0.95,
         )
         image_index = command.index("--image")
-        self.assertEqual(command[image_index + 1], "/tmp/previous.png")
+        self.assertEqual(command[image_index + 1], str(Path("/tmp/previous.png")))
         self.assertEqual(command[image_index + 2], "0")
         self.assertEqual(command[image_index + 3], "0.950")
         self.assertEqual(command[image_index + 4], "0")

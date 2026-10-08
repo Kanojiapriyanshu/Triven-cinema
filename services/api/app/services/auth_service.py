@@ -105,6 +105,17 @@ def _otp_digest(email_key: str, otp: str) -> str:
 def request_otp(email: str) -> tuple[str, str, int]:
     initialize_auth_store()
     email_key = normalize_email(email)
+    if settings.smtp_configured:
+        # A real email is about to be sent: stop the form being used to flood someone's inbox.
+        with closing(_connect()) as connection:
+            previous = connection.execute(
+                "SELECT created_at FROM otp_challenges WHERE email_key = ?", (email_key,)
+            ).fetchone()
+        if previous:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(previous["created_at"])).total_seconds()
+            wait = int(settings.auth_otp_cooldown_seconds - age)
+            if wait > 0:
+                raise AuthError(f"A code was just sent. Wait {wait} seconds before asking for another.")
     otp = f"{secrets.randbelow(1_000_000):06d}"
     challenge_id = uuid.uuid4().hex
     ttl = max(60, int(settings.auth_otp_ttl_seconds))

@@ -40,6 +40,12 @@ for directory in (STORAGE_DIR, GENERATED_DIR, LOGS_DIR):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if settings.is_production:
+        blockers, warnings = settings.production_problems()
+        for warning in warnings:
+            LOGGER.warning("Production configuration: %s", warning)
+        if blockers:
+            raise RuntimeError("Unsafe production configuration, refusing to start: " + " | ".join(blockers))
     initialize_job_store()
     initialize_auth_store()
     initialize_chat_store()
