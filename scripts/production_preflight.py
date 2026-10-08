@@ -105,18 +105,34 @@ def validate_production_settings(env: dict[str, str]) -> None:
         fail("AUTH_ENABLED must be true in production")
     if env.get("AUTO_LOGIN_EMAIL", "").strip():
         fail("AUTO_LOGIN_EMAIL must be empty in production; each visitor must sign in")
-    if env.get("DEMO_AUTH_SHOW_OTP", "true").strip().lower() not in FALSE_VALUES:
-        fail("DEMO_AUTH_SHOW_OTP must be false in production")
+    demo_value = env.get("DEMO_AUTH_SHOW_OTP", "true").strip().lower()
+    allow_demo_value = env.get("ALLOW_PRODUCTION_DEMO_AUTH", "false").strip().lower()
+    if demo_value not in TRUE_VALUES | FALSE_VALUES:
+        fail("DEMO_AUTH_SHOW_OTP must be a boolean (true or false)")
+    if allow_demo_value not in TRUE_VALUES | FALSE_VALUES:
+        fail("ALLOW_PRODUCTION_DEMO_AUTH must be a boolean (true or false)")
+    approved_demo = demo_value in TRUE_VALUES and allow_demo_value in TRUE_VALUES
+    if demo_value in TRUE_VALUES and not approved_demo:
+        fail(
+            "DEMO_AUTH_SHOW_OTP=true requires ALLOW_PRODUCTION_DEMO_AUTH=true in production; "
+            "otherwise set DEMO_AUTH_SHOW_OTP=false"
+        )
+    if approved_demo:
+        warn(
+            "Production demo authentication is enabled: browser-visible OTPs allow anyone to "
+            "sign in as any email address and access its workspace and GPU credits"
+        )
     if len(env.get("TRIVEN_SECRET_KEY", "").strip()) < 32:
         fail("TRIVEN_SECRET_KEY must contain at least 32 characters in production")
     else:
         ok("Session signing secret meets the minimum length")
 
-    if not env.get("SMTP_HOST", "").strip() or not env.get("SMTP_FROM", "").strip():
+    smtp_configured = bool(env.get("SMTP_HOST", "").strip() and env.get("SMTP_FROM", "").strip())
+    if not smtp_configured and not approved_demo:
         fail("SMTP_HOST and SMTP_FROM are required to deliver sign-in codes")
-    elif env.get("SMTP_SECURITY", "starttls").strip().lower() not in {"starttls", "ssl"}:
+    elif smtp_configured and env.get("SMTP_SECURITY", "starttls").strip().lower() not in {"starttls", "ssl"}:
         fail("SMTP_SECURITY must be starttls or ssl in production")
-    else:
+    elif smtp_configured:
         ok("Encrypted SMTP delivery is configured")
 
     if env.get("ENABLE_SYNC_RENDER_ENDPOINTS", "true").strip().lower() not in FALSE_VALUES:
